@@ -9,7 +9,6 @@
 - グラフ描画は networkx + pyvis があれば有効（任意）
 """
 
-from __future__ import annotations
 import re
 import itertools
 import pandas as pd
@@ -35,7 +34,7 @@ _SPLIT_RE = re.compile(r"[;；,、，/／|｜]+")
 def split_authors(cell) -> list[str]:
     if cell is None:
         return []
-    return [w.strip() for w in _SP LIT_RE.split(str(cell)) if w.strip()]
+    return [w.strip() for w in _SPLIT_RE.split(str(cell)) if w.strip()]
 
 def split_multi(cell) -> list[str]:
     if not cell:
@@ -60,7 +59,6 @@ def build_edges(df: pd.DataFrame) -> pd.DataFrame:
     if not rows:
         return pd.DataFrame(columns=["src", "dst", "weight"])
     e = pd.DataFrame(rows, columns=["src", "dst"])
-    # 無向ペアに正規化
     e["pair"] = e.apply(lambda r: tuple(sorted([r["src"], r["dst"]])), axis=1)
     e = e.groupby("pair").size().reset_index(name="weight")
     e[["src", "dst"]] = pd.DataFrame(e["pair"].tolist(), index=e.index)
@@ -71,7 +69,6 @@ def _centrality(edges: pd.DataFrame, metric: str) -> pd.DataFrame:
     if edges.empty:
         return pd.DataFrame(columns=["著者", "スコア"])
     if not HAS_NX:
-        # networkx なし → 重み付きの簡易次数 (src+dst の和)
         deg = pd.concat([edges.groupby("src")["weight"].sum(),
                          edges.groupby("dst")["weight"].sum()], axis=1).fillna(0)
         deg["スコア"] = deg["weight"].sum(axis=1)
@@ -79,7 +76,6 @@ def _centrality(edges: pd.DataFrame, metric: str) -> pd.DataFrame:
         out.columns = ["著者", "スコア"]
         return out
 
-    # networkx あり → 本格計算
     G = nx.Graph()
     for _, r in edges.iterrows():
         s, t, w = r["src"], r["dst"], float(r["weight"])
@@ -141,8 +137,7 @@ def _draw_network(edges: pd.DataFrame, min_weight: int, top_nodes: list[str] | N
 def render_coauthor_tab(df: pd.DataFrame):
     st.subheader("👥 共著ネットワーク（研究者どうしのつながり）")
 
-    # ---- フィルタ群（対象年 / 対象物 / 研究タイプ） ----
-    # 年
+    # 年レンジ
     if "発行年" in df.columns:
         y = pd.to_numeric(df["発行年"], errors="coerce")
         if y.notna().any():
@@ -152,7 +147,7 @@ def render_coauthor_tab(df: pd.DataFrame):
     else:
         ymin, ymax = 1980, 2025
 
-    # 選択肢
+    # ドロップダウン候補
     tg_choices, tp_choices = _extract_choices(df)
 
     f1, f2, f3 = st.columns([1.2, 1.2, 1.2])
@@ -163,11 +158,10 @@ def render_coauthor_tab(df: pd.DataFrame):
     with f3:
         tp_sel = st.multiselect("研究タイプ（部分一致・複数）", tp_choices, default=[])
 
-    # ---- スコア方式など ----
     c1, c2, c3, c4 = st.columns([1, 1, 1, 1])
     with c1:
         metric = st.selectbox("スコア方式", ["degree", "betweenness", "eigenvector"], index=0,
-                              help="degree: つながりの多さ / betweenness: 仲介の多さ / eigenvector: 影響の大きさ")
+                              help="degree: つながりの多さ / betweenness: 橋渡し度 / eigenvector: 影響の連鎖")
     with c2:
         top_n = st.number_input("上位表示件数", min_value=5, max_value=100, value=30, step=5)
     with c3:
@@ -175,29 +169,21 @@ def render_coauthor_tab(df: pd.DataFrame):
     with c4:
         focus_top = st.toggle("ネットワーク描画は上位の周辺だけ", value=True)
 
-    # ---- データをフィルタ ----
+    # データをフィルタ
     use = df.copy()
-
-    # 年
     if "発行年" in use.columns:
         y = pd.to_numeric(use["発行年"], errors="coerce")
         use = use[(y >= year_from) & (y <= year_to) | y.isna()]
 
-    # 対象物
     if tg_sel and "対象物_top3" in use.columns:
         keys = [s.lower() for s in tg_sel]
-        use = use[use["対象物_top3"].astype(str).str.lower().apply(
-            lambda v: any(k in v for k in keys)
-        )]
+        use = use[use["対象物_top3"].astype(str).str.lower().apply(lambda v: any(k in v for k in keys))]
 
-    # 研究タイプ
     if tp_sel and "研究タイプ_top3" in use.columns:
         keys = [s.lower() for s in tp_sel]
-        use = use[use["研究タイプ_top3"].astype(str).str.lower().apply(
-            lambda v: any(k in v for k in keys)
-        )]
+        use = use[use["研究タイプ_top3"].astype(str).str.lower().apply(lambda v: any(k in v for k in keys))]
 
-    # ---- エッジ作成 & 指標計算 ----
+    # エッジ作成 & 指標計算
     edges = build_edges(use)
     if edges.empty:
         st.info("条件に合う共著関係が見つかりませんでした。フィルタを緩めてください。")
@@ -205,7 +191,6 @@ def render_coauthor_tab(df: pd.DataFrame):
 
     rank = _centrality(edges, metric=metric).head(int(top_n))
 
-    # ---- 表示（わかりやすいガイド付き）----
     st.markdown("### 🔝 上位研究者（つながりスコア）")
     st.caption(
         "・**degree**: 共同研究の相手が多いほど高スコア\n"
@@ -214,7 +199,6 @@ def render_coauthor_tab(df: pd.DataFrame):
     )
     st.dataframe(rank, use_container_width=True, hide_index=True)
 
-    # ---- 可視化（任意）----
     with st.expander("🕸️ ネットワークを可視化する（任意）", expanded=False):
         st.caption("※ networkx / pyvis が導入済みの環境で動作します。")
         if st.button("🌐 描画する"):
