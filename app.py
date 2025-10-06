@@ -678,4 +678,4 @@ with tab_search:
 with tab_analysis:
  #   st.header("📊 分析（準備中）")
  #   st.info("分析タブはこのあと実装予定です。いまは検索タブの機能のみ提供しています。")
- render_analysis_tab(df)
+    render_analysis_tab(df)
