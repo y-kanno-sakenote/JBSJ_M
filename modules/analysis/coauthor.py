@@ -114,10 +114,10 @@ def _draw_network(edges: pd.DataFrame, min_weight: int, top_nodes: list[str] | N
     for _, r in use.iterrows():
         G.add_edge(r["src"], r["dst"], weight=int(r["weight"]))
 
-    if top_nodes:
-        keep = set(top_nodes) | {nbr for n in top_nodes for nbr in G.neighbors(n)}
-        G = G.subgraph(keep).copy()
-
+if top_nodes:
+    keep = set(top_nodes) | {nbr for n in top_nodes if n in G for nbr in G.neighbors(n)}
+    G = G.subgraph(keep).copy()
+    
     net = Network(height=f"{height_px}px", width="100%", bgcolor="#fff", font_color="#222")
     net.barnes_hut(gravity=-30000, central_gravity=0.25, spring_length=110, spring_strength=0.02)
     for n in G.nodes():
