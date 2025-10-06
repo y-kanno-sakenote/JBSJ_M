@@ -130,9 +130,9 @@ def _draw_network(edges: pd.DataFrame, top_nodes=None, min_weight=1, height_px=6
         w = int(d.get("weight", 1))
         net.add_edge(s, t, value=w, title=f"共著回数: {w}")
 
-    # ★ Streamlit 環境で安定する書き方
+    # ✨ ここを置き換え：show() → write_html(..., notebook=False)
     out_html = "coauthor_network.html"
-    net.write_html(out_html, notebook=False, local=True)  # ← ここがポイント
+    net.write_html(out_html, notebook=False, open_browser=False)
 
     with open(out_html, encoding="utf-8") as f:
         html = f.read()
