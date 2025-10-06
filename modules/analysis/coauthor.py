@@ -128,11 +128,14 @@ def _draw_network(edges: pd.DataFrame, top_nodes=None, min_weight=1, height_px=6
         w = int(d.get("weight", 1))
         net.add_edge(s, t, value=w, title=f"共著回数: {w}")
 
-    net.show("coauthor_network.html")
-    with open("coauthor_network.html", encoding="utf-8") as f:
-        html = f.read()
-    st.components.v1.html(html, height=height_px, scrolling=True)
+# --- HTMLを安全に生成して埋め込み（notebook=False）---
+html_path = "coauthor_network.html"
+net.write_html(html_path, notebook=False, open_browser=False)
 
+# Streamlitに埋め込み
+with open(html_path, "r", encoding="utf-8") as f:
+    html = f.read()
+st.components.v1.html(html, height=height_px, scrolling=True)
 
 # ========= UI構築 =========
 def render_coauthor_tab(df: pd.DataFrame):
