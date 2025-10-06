@@ -128,10 +128,57 @@ def _draw_network(edges: pd.DataFrame, top_nodes=None, min_weight=1, height_px=6
         w = int(d.get("weight", 1))
         net.add_edge(s, t, value=w, title=f"共著回数: {w}")
 
-    # ✅ 安定版：Streamlit向けHTML生成
-    html_path = "coauthor_network.html"
-    net.write_html(html_path, notebook=False, open_browser=False)
-
-    with open(html_path, "r", encoding="utf-8") as f:
+    net.show("coauthor_network.html")
+    with open("coauthor_network.html", encoding="utf-8") as f:
         html = f.read()
     st.components.v1.html(html, height=height_px, scrolling=True)
+
+
+# ========= UI構築 =========
+def render_coauthor_tab(df: pd.DataFrame):
+    st.markdown("## 👥 研究者のつながり分析（共著ネットワーク）")
+
+    st.caption("共著関係が多いほど、研究ネットワークの中心に位置します。")
+
+    if df is None or "著者" not in df.columns:
+        st.warning("著者データが見つかりません。")
+        return
+
+    # 年範囲
+    if "発行年" in df.columns:
+        y = pd.to_numeric(df["発行年"], errors="coerce")
+        ymin, ymax = int(y.min()), int(y.max()) if y.notna().any() else (1980, 2025)
+    else:
+        ymin, ymax = 1980, 2025
+
+    c1, c2, c3, c4 = st.columns([1, 1, 1, 1])
+    with c1:
+        year_from, year_to = st.slider("対象年", min_value=ymin, max_value=ymax, value=(ymin, ymax))
+    with c2:
+        metric = st.selectbox("スコア計算方式", ["degree", "betweenness", "eigenvector"], index=0)
+    with c3:
+        top_n = st.number_input("表示件数", min_value=5, max_value=100, value=30, step=5)
+    with c4:
+        min_w = st.number_input("共著回数の下限 (w≥)", min_value=1, max_value=20, value=2, step=1)
+
+    # --- エッジ作成 ---
+    edges = build_coauthor_edges(df, year_from, year_to)
+    if edges.empty:
+        st.info("共著関係が見つかりませんでした。")
+        return
+
+    # --- スコア表示 ---
+    st.markdown("### 🔝 研究者のつながりランキング")
+    rank = _centrality_from_edges(edges, metric=metric).head(int(top_n))
+    st.dataframe(rank, use_container_width=True, hide_index=True)
+
+    st.markdown("💬 上位の研究者ほど、他の研究者と多く共著しています。")
+    st.caption("＝ネットワークのハブ（情報・技術の中心）を示します。")
+
+    # --- 可視化 ---
+    with st.expander("🕸️ ネットワークを可視化してみる", expanded=False):
+        st.caption("共著関係をマップ上に可視化します（依存: networkx / pyvis）")
+        top_only = st.toggle("トップNの周辺のみ表示（軽量）", value=True)
+        top_nodes = rank["著者"].tolist() if top_only else None
+        if st.button("🌐 ネットワークを描画する"):
+            _draw_network(edges, top_nodes=top_nodes, min_weight=int(min_w), height_px=700)
