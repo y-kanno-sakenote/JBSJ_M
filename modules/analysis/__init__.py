@@ -1,15 +1,18 @@
 # modules/analysis/__init__.py
+# -*- coding: utf-8 -*-
 import streamlit as st
 import pandas as pd
 
-def render_analysis_tab(df: pd.DataFrame) -> None:
-    try:
-        from .coauthor import render_coauthor_tab
-    except Exception as e:
-        st.error("❌ 共著ネットワークモジュールの読み込みに失敗しました。")
-        st.exception(e)
-        return
+from .coauthor import render_coauthor_tab
+from .keywords import render_keyword_tab
+from .targettype import render_targettype_tab
 
-    tab1, = st.tabs(["👥 共著ネットワーク"])
+def render_analysis_tab(df: pd.DataFrame) -> None:
+    st.header("📊 分析")
+    tab1, tab2, tab3 = st.tabs(["👥 共著ネットワーク", "🧠 キーワード", "🏭 対象物・研究タイプ"])
     with tab1:
         render_coauthor_tab(df)
+    with tab2:
+        render_keyword_tab(df)
+    with tab3:
+        render_targettype_tab(df)
