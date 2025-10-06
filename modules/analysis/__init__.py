@@ -8,7 +8,7 @@ from .keywords import render_keyword_tab
 from .targettype import render_targettype_tab
 
 def render_analysis_tab(df: pd.DataFrame) -> None:
-    st.header("📊 分析")
+ #   st.header("📊 分析")
     tab1, tab2, tab3 = st.tabs(["👥 共著ネットワーク", "🧠 キーワード", "🏭 対象物・研究タイプ"])
     with tab1:
         render_coauthor_tab(df)
