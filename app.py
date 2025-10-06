@@ -675,6 +675,6 @@ with tab_search:
         )
 
 with tab_analysis:
-    # 依存追加なしでプレースホルダ（機能は変えない）
-    st.header("📊 分析（準備中）")
-    st.info("分析タブはこのあと実装予定です。いまは検索タブの機能のみ提供しています。")
+ #   st.header("📊 分析（準備中）")
+ #   st.info("分析タブはこのあと実装予定です。いまは検索タブの機能のみ提供しています。")
+ render_analysis_tab(df)
