@@ -16,7 +16,7 @@ import pandas as pd
 import requests
 import streamlit as st
 from pathlib import Path
-from modules.analysisa import render_analysis_tab
+from modules.analysis import render_analysis_tab
 
 # -------------------- ページ設定 --------------------
 st.set_page_config(page_title="論文検索（統一UI版）", layout="wide")
