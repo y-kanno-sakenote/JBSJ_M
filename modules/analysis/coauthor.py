@@ -101,7 +101,7 @@ def _centrality_from_edges(edges: pd.DataFrame, metric: str = "degree") -> pd.Da
 
 
 def _draw_network(edges: pd.DataFrame, top_nodes=None, min_weight=1, height_px=650):
-    """共著ネットワークをPyVisで描画（Streamlit向け: show()は使わない）"""
+    import streamlit as st
     if not (HAS_NX and HAS_PYVIS):
         st.info("⚠️ グラフ描画には networkx / pyvis が必要です。ランキング表は利用できます。")
         return
@@ -111,7 +111,7 @@ def _draw_network(edges: pd.DataFrame, top_nodes=None, min_weight=1, height_px=6
         st.warning("条件に合う共著関係が見つかりませんでした。")
         return
 
-    import networkx as nx  # 再確認（安全のため）
+    import networkx as nx
     from pyvis.network import Network
 
     G = nx.Graph()
@@ -123,14 +123,8 @@ def _draw_network(edges: pd.DataFrame, top_nodes=None, min_weight=1, height_px=6
         keep |= {nbr for n in top_nodes for nbr in G.neighbors(n)}
         G = G.subgraph(keep).copy()
 
-    # Streamlit 埋め込みに最適化（CDN使わず自己完結）
-    net = Network(
-        height=f"{height_px}px",
-        width="100%",
-        bgcolor="#fff",
-        font_color="#222",
-        cdn_resources="in_line",   # ★外部CDNに頼らない
-    )
+    net = Network(height=f"{height_px}px", width="100%", bgcolor="#fff",
+                  font_color="#222", cdn_resources="in_line")
     net.barnes_hut(gravity=-30000, central_gravity=0.25, spring_length=110)
 
     for n in G.nodes():
@@ -140,19 +134,11 @@ def _draw_network(edges: pd.DataFrame, top_nodes=None, min_weight=1, height_px=6
         net.add_edge(s, t, value=w, title=f"共著回数: {w}")
 
     net.set_options("""
-    {
-      "nodes": {"shape": "dot", "scaling": {"min": 10, "max": 40}},
-      "edges": {"smooth": false}
-    }
+    {"nodes":{"shape":"dot","scaling":{"min":10,"max":40}},"edges":{"smooth":false}}
     """)
 
-    # ★ show() は使わない（notebook=True になるため）
     html_path = "coauthor_network.html"
     net.write_html(html_path, open_browser=False, notebook=False)
-
-    try:
-        with open(html_path, "r", encoding="utf-8") as f:
-            html = f.read()
-        st.components.v1.html(html, height=height_px, scrolling=True)
-    except Exception as e:
-        st.error(f"ネットワークの埋め込みでエラーが発生しました: {e}")
+    with open(html_path, "r", encoding="utf-8") as f:
+        html = f.read()
+    st.components.v1.html(html, height=height_px, scrolling=True)
