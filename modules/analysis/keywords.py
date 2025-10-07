@@ -5,11 +5,6 @@
 ① 頻出キーワード分析（年/対象物/研究タイプでフィルタ → 上位を可視化）
 ② 共起キーワードネットワーク（同一論文内で共起する語をエッジ化）
 ③ トレンド分析（年ごとの出現頻度 ↗︎/↘︎ を可視化）
-
-依存はすべて任意扱い：
-- plotly（棒/折れ線）→ 無ければ Streamlit の簡易チャート
-- wordcloud → 無ければスキップ
-- networkx / pyvis → 無ければスキップ
 """
 
 from __future__ import annotations
@@ -106,13 +101,13 @@ def _render_freq_block(df):
     c1, c2, c3 = st.columns([1.2, 1.2, 1.2])
     with c1:
         y_from, y_to = st.slider("対象年（範囲）", min_value=ymin, max_value=ymax,
-                                 value=(ymin, ymax), key="kw1_year")
+                                 value=(ymin, ymax), key="kwtab_freq_year")
     with c2:
         target_candidates = sorted({t for v in df.get("対象物_top3", pd.Series(dtype=str)).fillna("") for t in split_multi(v)})
-        targets = st.multiselect("対象物", target_candidates, default=[], key="kw1_targets")
+        targets = st.multiselect("対象物", target_candidates, default=[], key="kwtab_freq_targets")
     with c3:
         type_candidates = sorted({t for v in df.get("研究タイプ_top3", pd.Series(dtype=str)).fillna("") for t in split_multi(v)})
-        types = st.multiselect("研究タイプ", type_candidates, default=[], key="kw1_types")
+        types = st.multiselect("研究タイプ", type_candidates, default=[], key="kwtab_freq_types")
 
     use = filter_df(df, y_from, y_to, targets, types)
     counter = Counter()
@@ -127,12 +122,11 @@ def _render_freq_block(df):
         st.info("該当キーワードなし。")
         return
 
-    topn = st.slider("上位表示件数", 5, 100, 30, 5, key="kw1_topn")
+    topn = st.slider("上位表示件数", 5, 100, 30, 5, key="kwtab_freq_topn")
     items = counter.most_common(topn)
     freq_df = pd.DataFrame([{"キーワード": surface_form[k], "出現数": n} for k, n in items])
 
     if HAS_PLOTLY:
-        import plotly.express as px
         fig = px.bar(freq_df.sort_values("出現数", ascending=True),
                      x="出現数", y="キーワード", orientation="h", title="頻出キーワード")
         st.plotly_chart(fig, use_container_width=True)
@@ -152,15 +146,15 @@ def _render_cooccurrence_block(df):
     c1, c2, c3, c4 = st.columns([1.2, 1.2, 1.0, 1.0])
     with c1:
         y_from, y_to = st.slider("対象年（範囲）", min_value=ymin, max_value=ymax,
-                                 value=(ymin, ymax), key="kw2_year")
+                                 value=(ymin, ymax), key="kwtab_cooc_year")
     with c2:
         target_candidates = sorted({t for v in df.get("対象物_top3", pd.Series(dtype=str)).fillna("") for t in split_multi(v)})
-        targets = st.multiselect("対象物", target_candidates, default=[], key="kw2_targets")
+        targets = st.multiselect("対象物", target_candidates, default=[], key="kwtab_cooc_targets")
     with c3:
         type_candidates = sorted({t for v in df.get("研究タイプ_top3", pd.Series(dtype=str)).fillna("") for t in split_multi(v)})
-        types = st.multiselect("研究タイプ", type_candidates, default=[], key="kw2_types")
+        types = st.multiselect("研究タイプ", type_candidates, default=[], key="kwtab_cooc_types")
     with c4:
-        min_w = st.number_input("表示する最小共起回数 (w≥)", 1, 20, 2, key="kw2_minw")
+        min_w = st.number_input("表示する最小共起回数 (w≥)", 1, 20, 2, key="kwtab_cooc_minw")
 
     use = filter_df(df, y_from, y_to, targets, types)
     pairs = Counter()
@@ -196,7 +190,7 @@ def _render_cooccurrence_block(df):
         for s, t, d in G.edges(data=True):
             w = int(d.get("weight", 1))
             net.add_edge(s, t, value=w, title=f"共起回数: {w}")
-        html = net.generate_html(notebook=False)
+        html = net.generate_html(notebook=False)   # ← show() は使わず generate_html()
         st.components.v1.html(html, height=700, scrolling=True)
 
 
@@ -212,15 +206,15 @@ def _render_trend_block(df):
     c1, c2, c3, c4 = st.columns([1.2, 1.2, 1.0, 1.0])
     with c1:
         y_from, y_to = st.slider("対象年（範囲）", min_value=ymin, max_value=ymax,
-                                 value=(ymin, ymax), key="kw3_year")
+                                 value=(ymin, ymax), key="kwtab_trend_year")
     with c2:
         target_candidates = sorted({t for v in df.get("対象物_top3", pd.Series(dtype=str)).fillna("") for t in split_multi(v)})
-        targets = st.multiselect("対象物", target_candidates, default=[], key="kw3_targets")
+        targets = st.multiselect("対象物", target_candidates, default=[], key="kwtab_trend_targets")
     with c3:
         type_candidates = sorted({t for v in df.get("研究タイプ_top3", pd.Series(dtype=str)).fillna("") for t in split_multi(v)})
-        types = st.multiselect("研究タイプ", type_candidates, default=[], key="kw3_types")
+        types = st.multiselect("研究タイプ", type_candidates, default=[], key="kwtab_trend_types")
     with c4:
-        top_n = st.number_input("上位N語（全期間頻度で抽出）", 3, 30, 10, 1, key="kw3_topn")
+        top_n = st.number_input("上位N語（全期間頻度で抽出）", 3, 30, 10, 1, key="kwtab_trend_topn")
 
     use = filter_df(df, y_from, y_to, targets, types)
     if "発行年" not in use.columns:
