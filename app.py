@@ -19,9 +19,6 @@ from pathlib import Path
 from modules.analysis import render_analysis_tab
 import os
 
-CACHE_DIR = Path("cache")
-CACHE_DIR.mkdir(parents=True, exist_ok=True)
-
 # -------------------- ページ設定 --------------------
 st.set_page_config(page_title="論文検索（統一UI版）", layout="wide")
 
