@@ -19,8 +19,8 @@ from pathlib import Path
 from modules.analysis import render_analysis_tab
 import os
 
-CACHE_DIR = Path(".cache")
-CACHE_DIR.mkdir(exist_ok=True)
+CACHE_DIR = Path("cache")
+CACHE_DIR.mkdir(parents=True, exist_ok=True)
 
 # -------------------- ページ設定 --------------------
 st.set_page_config(page_title="論文検索（統一UI版）", layout="wide")
@@ -295,12 +295,20 @@ with st.sidebar:
     load_clicked = st.button("読み込み（URL/ファイルを優先）", type="primary", key="load_btn")
 
 with st.sidebar:
-    # 既存の読み込みUIの下などに追加
     use_disk_cache = st.toggle(
-        "🗃 ディスクキャッシュを使う",
+        "🗃 永続キャッシュを使う",
         value=True,
-        help="前処理結果を .cache に保存・再利用（分析タブの重い処理が速くなります）"
+        help="重い分析結果を cache/ に保存・再利用します（再起動後も有効）"
     )
+
+    if st.button("🧹 永続キャッシュをクリア"):
+        # モジュールのIOラッパを呼ぶ（後述の cache_io.py）
+        try:
+            from modules.utils.cache_io import clear_cache
+            n = clear_cache()
+            st.success(f"キャッシュを削除しました（{n} 個）")
+        except Exception as e:
+            st.warning(f"キャッシュ削除に失敗: {e}")
 
 # 優先順位: 1) クリックでURL/ファイル 2) デモ自動 3) 最後の手段：待機
 # ✅ 丸ごと置き換え：
@@ -688,5 +696,4 @@ with tab_search:
         )
 
 with tab_analysis:
-    from modules.analysis import render_analysis_tab
     render_analysis_tab(df, use_disk_cache=use_disk_cache)
