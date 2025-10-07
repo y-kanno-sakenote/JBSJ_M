@@ -241,7 +241,6 @@ DEMO_CSV_PATH = Path("data/keywords_summary5.csv")   # メインCSV
 SUMMARY_CSV_PATH = Path("data/summaries.csv")         # ← 追加: summary
 AUTHORS_CSV_PATH = Path("data/authors_readings.csv")  # ← 追加: 著者読み
 
-SECRET_URL = st.secrets.get("GSHEET_CSV_URL", "")  # （任意）Secretsに入れておけば自動使用
 
 @st.cache_data(ttl=600, show_spinner=False)
 def load_local_csv(path: Path) -> pd.DataFrame:
@@ -288,7 +287,10 @@ with st.sidebar:
     st.caption("※ まずはデモ用CSVを自動ロード。URL/ファイル指定で上書きできます。")
 
     use_demo = st.toggle("デモCSVを自動ロードする", value=True, help="data/demo.csv を読み込みます。")
-    url = st.text_input("公開CSVのURL（Googleスプレッドシート output=csv）", value=SECRET_URL)
+    url = st.text_input(
+        "CSVのURL（任意・Googleスプレッドシートの output=csv でもOK）",
+        value=""
+    )
     up  = st.file_uploader("CSVをローカルから読み込み", type=["csv"])
     load_clicked = st.button("読み込み（URL/ファイルを優先）", type="primary", key="load_btn")
 
@@ -301,6 +303,7 @@ with st.sidebar:
     )
 
 # 優先順位: 1) クリックでURL/ファイル 2) デモ自動 3) 最後の手段：待機
+# ✅ 丸ごと置き換え：
 df = None
 err = None
 try:
@@ -316,9 +319,6 @@ try:
     elif use_demo and DEMO_CSV_PATH.exists():
         df = load_local_csv(DEMO_CSV_PATH)
         st.caption(f"✅ デモCSVを自動ロード中: {DEMO_CSV_PATH}")
-    elif SECRET_URL:
-        df = load_url_csv(SECRET_URL)
-        st.caption("✅ SecretsのURLから自動ロード中")
 except Exception as e:
     err = e
 
@@ -327,7 +327,7 @@ if df is None:
         st.error(f"読み込みエラー: {err}")
     st.info("左のサイドバーで CSV を指定するか、デモCSVを有効にしてください。")
     st.stop()
-
+    
 # --- summary をマージ ---
 sum_df = load_summaries(SUMMARY_CSV_PATH)
 if sum_df is not None:
