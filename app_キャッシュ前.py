@@ -17,10 +17,6 @@ import requests
 import streamlit as st
 from pathlib import Path
 from modules.analysis import render_analysis_tab
-import os
-
-CACHE_DIR = Path(".cache")
-CACHE_DIR.mkdir(exist_ok=True)
 
 # -------------------- ページ設定 --------------------
 st.set_page_config(page_title="論文検索（統一UI版）", layout="wide")
@@ -291,14 +287,6 @@ with st.sidebar:
     url = st.text_input("公開CSVのURL（Googleスプレッドシート output=csv）", value=SECRET_URL)
     up  = st.file_uploader("CSVをローカルから読み込み", type=["csv"])
     load_clicked = st.button("読み込み（URL/ファイルを優先）", type="primary", key="load_btn")
-
-with st.sidebar:
-    # 既存の読み込みUIの下などに追加
-    use_disk_cache = st.toggle(
-        "🗃 ディスクキャッシュを使う",
-        value=True,
-        help="前処理結果を .cache に保存・再利用（分析タブの重い処理が速くなります）"
-    )
 
 # 優先順位: 1) クリックでURL/ファイル 2) デモ自動 3) 最後の手段：待機
 df = None
@@ -688,5 +676,4 @@ with tab_search:
         )
 
 with tab_analysis:
-    from modules.analysis import render_analysis_tab
-    render_analysis_tab(df, use_disk_cache=use_disk_cache)
+     render_analysis_tab(df)

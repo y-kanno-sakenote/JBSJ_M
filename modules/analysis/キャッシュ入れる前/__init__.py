@@ -8,7 +8,7 @@ from .keywords import render_keyword_tab
 from .targettype import render_targettype_tab
 from .temporal import render_temporal_tab   # ← 追加
 
-def render_analysis_tab(df: pd.DataFrame, use_disk_cache: bool = False) -> None:
+def render_analysis_tab(df: pd.DataFrame) -> None:
     tab1, tab2, tab3, tab4 = st.tabs([
         "👥 共著ネットワーク",
         "⏳ 経年変化",              # ← 追加
@@ -16,9 +16,9 @@ def render_analysis_tab(df: pd.DataFrame, use_disk_cache: bool = False) -> None:
         "🏭 対象物・研究タイプ",
     ])
     with tab1:
-        render_coauthor_tab(df, use_disk_cache=use_disk_cache)
+        render_coauthor_tab(df)
     with tab2:
-        render_temporal_tab(df, use_disk_cache=use_disk_cache)
+        render_temporal_tab(df)
     with tab3:
         render_keyword_tab(df)
     with tab4:
