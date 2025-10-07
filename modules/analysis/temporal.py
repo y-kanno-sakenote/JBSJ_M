@@ -1,21 +1,19 @@
 # modules/analysis/temporal.py
 # -*- coding: utf-8 -*-
 """
-経年変化（中心性スコアの推移）
-- 年レンジ・対象物・研究タイプでフィルタ
-- ウインドウ幅とステップで期間をスライド → 中心性（degree / betweenness / eigenvector）を算出
-- 上位研究者のスコア推移を折れ線で可視化（Plotly が無ければ st.line_chart にフォールバック）
+経年変化（中心性の移動窓トレンド）
+
+- 指標: degree / betweenness / eigenvector（networkx が無い場合は次数近似でフォールバック）
+- 移動窓UIは重複キーを避ける安全版
+- Plotly があれば折れ線グラフ、無ければ st.line_chart にフォールバック
 """
 
 from __future__ import annotations
-import re
 import itertools
-from typing import Iterable, List, Tuple, Dict
-
 import pandas as pd
 import streamlit as st
 
-# ---- Optional deps ----
+# ---- optional deps ----
 try:
     import networkx as nx  # type: ignore
     HAS_NX = True
@@ -24,76 +22,39 @@ except Exception:
 
 try:
     import plotly.express as px  # type: ignore
-    HAS_PX = True
+    HAS_PLOTLY = True
 except Exception:
-    HAS_PX = False
+    HAS_PLOTLY = False
 
 
-# ========= 共有ユーティリティ（本モジュール内で自給自足） =========
-_AUTHOR_SPLIT_RE = re.compile(r"[;；,、，/／|｜]+")
+# ========= 内部ユーティリティ =========
+def _year_bounds(df: pd.DataFrame) -> tuple[int, int]:
+    if "発行年" in df.columns:
+        y = pd.to_numeric(df["発行年"], errors="coerce")
+        if y.notna().any():
+            return int(y.min()), int(y.max())
+    return 1980, 2025
 
-def split_authors(cell) -> List[str]:
+
+def _split_authors(cell) -> list[str]:
+    import re
     if cell is None:
         return []
-    return [w.strip() for w in _AUTHOR_SPLIT_RE.split(str(cell)) if w.strip()]
-
-def norm_key(s: str) -> str:
-    s = str(s or "")
-    s = s.replace("\u00A0", " ")
-    s = re.sub(r"\s+", " ", s).strip()
-    return s.lower()
-
-def split_multi(s) -> List[str]:
-    """ '清酒; ワイン / ビール' などを分割 """
-    if not s:
-        return []
-    return [w.strip() for w in re.split(r"[;；,、，/／|｜\s　]+", str(s)) if w.strip()]
-
-def col_contains_any(df_col: pd.Series, needles: List[str]) -> pd.Series:
-    """列（文字列）に needles のいずれかが部分一致するか（小文字/全角空白正規化）。"""
-    if not needles:
-        return pd.Series([True] * len(df_col), index=df_col.index)
-    lo_needles = [norm_key(n) for n in needles]
-    def _hit(v: str) -> bool:
-        s = norm_key(v)
-        return any(n in s for n in lo_needles)
-    return df_col.fillna("").astype(str).map(_hit)
+    return [w.strip() for w in re.split(r"[;；,、，/／|｜]+", str(cell)) if w.strip()]
 
 
-# ========= 共著エッジ作成 =========
 @st.cache_data(ttl=600, show_spinner=False)
-def build_coauthor_edges(df: pd.DataFrame,
-                         year_from: int, year_to: int,
-                         targets: List[str] | None = None,
-                         types: List[str] | None = None) -> pd.DataFrame:
-    """
-    入力: df（少なくとも '著者', '発行年', '対象物_top3', '研究タイプ_top3' を推奨）
-    出力: edges DataFrame ['src', 'dst', 'weight']
-    """
+def _build_edges(df: pd.DataFrame, y_from: int, y_to: int) -> pd.DataFrame:
+    """[y_from, y_to] の範囲で共著エッジを構築"""
     use = df.copy()
-
-    # 年で絞り込み
     if "発行年" in use.columns:
         y = pd.to_numeric(use["発行年"], errors="coerce")
-        use = use[(y >= year_from) & (y <= year_to) | y.isna()]
+        use = use[(y >= y_from) & (y <= y_to) | y.isna()]
 
-    # 対象物フィルタ
-    if targets:
-        if "対象物_top3" in use.columns:
-            mask_tg = col_contains_any(use["対象物_top3"], targets)
-            use = use[mask_tg]
-
-    # 研究タイプフィルタ
-    if types:
-        if "研究タイプ_top3" in use.columns:
-            mask_tp = col_contains_any(use["研究タイプ_top3"], types)
-            use = use[mask_tp]
-
-    # 著者ペアをカウント
-    rows: List[Tuple[str, str]] = []
-    for a in use.get("著者", pd.Series(dtype=str)).fillna(""):
-        names = split_authors(a)
-        for s, t in itertools.combinations(sorted(set(names)), 2):
+    rows = []
+    for authors in use.get("著者", pd.Series(dtype=str)).fillna(""):
+        names = sorted(set(_split_authors(authors)))
+        for s, t in itertools.combinations(names, 2):
             rows.append((s, t))
 
     if not rows:
@@ -107,32 +68,36 @@ def build_coauthor_edges(df: pd.DataFrame,
     return edges[["src", "dst", "weight"]]
 
 
-# ========= 中心性スコア =========
-def centrality_from_edges(edges: pd.DataFrame, metric: str = "degree") -> pd.DataFrame:
+def _centrality_from_edges(edges: pd.DataFrame, metric: str = "degree") -> pd.Series:
     """
-    edges: ['src','dst','weight']
-    metric: 'degree'|'betweenness'|'eigenvector'
-    返り値: ['author','score','coauth_count']
+    エッジから author -> 中心性スコア（Series）を返す
     """
     if edges.empty:
-        return pd.DataFrame(columns=["author", "score", "coauth_count"])
-
-    # 簡易共著数（重み和）だけは常に計算
-    deg_simple = pd.concat([
-        edges.groupby("src")["weight"].sum(),
-        edges.groupby("dst")["weight"].sum(),
-    ], axis=1).fillna(0)
-    deg_simple["coauth_count"] = deg_simple["weight"].sum(axis=1)
-    deg_simple = deg_simple["coauth_count"].reset_index().rename(columns={"index": "author"})
+        return pd.Series(dtype=float)
 
     if not HAS_NX:
-        out = deg_simple.rename(columns={"coauth_count": "score"})
-        return out[["author", "score", "coauth_count"]].sort_values("score", ascending=False).reset_index(drop=True)
+        # networkx が無い場合は重み付き次数の簡易版
+        deg = (
+            pd.concat([edges.groupby("src")["weight"].sum(),
+                       edges.groupby("dst")["weight"].sum()], axis=1)
+              .fillna(0)
+              .sum(axis=1)
+              .sort_values(ascending=False)
+        )
+        deg.name = "score"
+        return deg
 
-    # networkx による中心性
+    # networkx あり：本格計算
     G = nx.Graph()
     for _, r in edges.iterrows():
-        G.add_edge(r["src"], r["dst"], weight=float(r["weight"]))
+        s, t, w = r["src"], r["dst"], float(r["weight"])
+        if G.has_edge(s, t):
+            G[s][t]["weight"] += w
+        else:
+            G.add_edge(s, t, weight=w)
+
+    if G.number_of_nodes() == 0:
+        return pd.Series(dtype=float)
 
     if metric == "betweenness":
         cen = nx.betweenness_centrality(G, weight="weight", normalized=True)
@@ -144,155 +109,171 @@ def centrality_from_edges(edges: pd.DataFrame, metric: str = "degree") -> pd.Dat
     else:
         cen = nx.degree_centrality(G)
 
-    cen_df = pd.Series(cen, name="score").reset_index().rename(columns={"index": "author"})
-    out = pd.merge(cen_df, deg_simple, on="author", how="left")
-    out["coauth_count"] = out["coauth_count"].fillna(0).astype(float)
-    return out[["author", "score", "coauth_count"]].sort_values("score", ascending=False).reset_index(drop=True)
+    s = pd.Series(cen, dtype=float).sort_values(ascending=False)
+    s.name = "score"
+    return s
 
 
-# ========= ウインドウスライス（時系列） =========
-def _window_ranges(ymin: int, ymax: int, width: int, step: int) -> List[Tuple[int, int, int]]:
+@st.cache_data(ttl=600, show_spinner=False)
+def _sliding_window_scores(
+    df: pd.DataFrame,
+    metric: str,
+    start_year: int,
+    win: int,
+    step: int,
+    ymax: int,
+) -> pd.DataFrame:
     """
-    例: ymin=1990, ymax=2024, width=5, step=3
-    -> [(1990,1994,1992), (1993,1997,1995), ...]  ※ (from,to,center)
+    複数ウィンドウ（start, start+win-1）ごとの中心性スコアを縦持ちDataFrameで返す
+    columns: [window, author, score]
     """
-    out = []
-    y = ymin
-    while y <= ymax:
-        y2 = min(y + width - 1, ymax)
-        center = (y + y2) // 2
-        out.append((y, y2, center))
-        if y2 >= ymax:
-            break
-        y += step
-    return out
-
-
-def _timeseries_scores(df: pd.DataFrame,
-                       ymin: int, ymax: int,
-                       width: int, step: int,
-                       metric: str,
-                       targets: List[str], types: List[str],
-                       top_n_each: int = 10,
-                       max_authors: int = 20) -> pd.DataFrame:
-    """
-    期間をスライドしながら中心性スコアを算出。
-    可視化用に ['center_year','author','score'] を返す。
-    表示対象の author は各ウインドウの上位集合から最大 max_authors に制限。
-    """
-    windows = _window_ranges(ymin, ymax, width, step)
     records = []
-    author_pool = []
-
-    for yf, yt, yc in windows:
-        edges = build_coauthor_edges(df, yf, yt, targets, types)
-        rank = centrality_from_edges(edges, metric=metric)
-        if rank.empty:
-            continue
-        # その窓の上位から候補を追加
-        author_pool.extend(rank["author"].head(top_n_each).tolist())
-        for _, r in rank.iterrows():
-            records.append({"center_year": yc, "author": r["author"], "score": float(r["score"])})
+    s = start_year
+    while s <= ymax - win + 1:
+        e = s + win - 1
+        edges = _build_edges(df, s, e)
+        scores = _centrality_from_edges(edges, metric=metric)
+        if not scores.empty:
+            rec = pd.DataFrame(
+                {"window": f"{s}-{e}", "author": scores.index, "score": scores.values}
+            )
+            records.append(rec)
+        s += step
 
     if not records:
-        return pd.DataFrame(columns=["center_year", "author", "score"])
-
-    ts = pd.DataFrame(records)
-    # 可視化対象 author を制限（頻出上位）
-    top_authors = ts["author"].value_counts().head(max_authors).index.tolist()
-    ts = ts[ts["author"].isin(top_authors)].copy()
-    ts = ts.sort_values(["author", "center_year"]).reset_index(drop=True)
-    return ts
+        return pd.DataFrame(columns=["window", "author", "score"])
+    return pd.concat(records, ignore_index=True)
 
 
 # ========= メイン描画 =========
-def render_temporal_tab(df: pd.DataFrame) -> None:
-    st.markdown("## ⏳ 研究ネットワークの経年変化")
+def render_temporal_tab(df: pd.DataFrame, use_disk_cache: bool = True) -> None:
+    st.markdown("## ⏳ 経年変化（中心性の移動窓）")
 
-    if df is None or "著者" not in df.columns:
-        st.info("著者データが見つかりません。")
-        return
+    ymin, ymax = _year_bounds(df)
 
-    # 年の範囲
-    if "発行年" in df.columns:
-        y = pd.to_numeric(df["発行年"], errors="coerce")
-        if y.notna().any():
-            ymin_all, ymax_all = int(y.min()), int(y.max())
-        else:
-            ymin_all, ymax_all = 1980, 2025
-    else:
-        ymin_all, ymax_all = 1980, 2025
+    # === 年・移動窓コントロール（安全版：固有キー & クランプ） ===
+    with st.container():
+        c1, c2, c3, c4, c5 = st.columns([1, 1, 1, 1, 1])
 
-    # 1段目: 年・ウインドウ設定
-    c1, c2, c3, c4 = st.columns([1, 1, 1, 1])
-    with c1:
-        y_from, y_to = st.slider("対象年（範囲）", min_value=ymin_all, max_value=ymax_all,
-                                 value=(ymin_all, ymax_all))
-    with c2:
-        win = st.number_input("ウインドウ幅（年）", min_value=2, max_value=15, value=5, step=1)
-    with c3:
-        step = st.number_input("ステップ（年）", min_value=1, max_value=10, value=2, step=1)
-    with c4:
-        metric = st.selectbox(
-            "中心性指標",
-            ["degree", "betweenness", "eigenvector"],
-            index=0,
-            format_func=lambda x: {
-                "degree": "次数中心性（つながりの数）",
-                "betweenness": "媒介中心性（橋渡し度）",
-                "eigenvector": "固有ベクトル中心性（影響力）",
-            }[x],
-            help="networkx が未導入の場合は簡易スコア（共著数の合計）で代替します。",
+        with c1:
+            metric = st.selectbox(
+                "中心性指標",
+                ["degree", "betweenness", "eigenvector"],
+                index=0,
+                key="temporal_metric",
+                help="学術的中心性指標を選択します。networkx未導入の場合は次数近似で計算します。",
+            )
+
+        with c2:
+            win = st.number_input(
+                "移動窓（年）",
+                min_value=2,
+                max_value=max(2, ymax - ymin + 1),
+                value=min(5, max(2, ymax - ymin + 1)),
+                step=1,
+                key="temporal_win",
+                help="例: 5年にすると [開始年, 開始年+4] を1窓として集計します。",
+            )
+
+        with c3:
+            step = st.number_input(
+                "シフト幅（年）",
+                min_value=1,
+                max_value=max(1, ymax - ymin + 1),
+                value=1,
+                step=1,
+                key="temporal_step",
+                help="窓を何年ずつスライドするか。",
+            )
+
+        max_start = max(ymin, ymax - int(win) + 1)
+        if ymin > max_start:
+            # 年範囲 < 窓長 → 窓長を縮める
+            win = ymax - ymin + 1
+            max_start = ymin
+            st.warning("移動窓が年範囲より長いので、自動的に窓長を短縮しました。")
+
+        with c4:
+            start_year = st.slider(
+                "開始年（移動窓）",
+                min_value=ymin,
+                max_value=max_start,
+                value=min(ymin, max_start),
+                step=1,
+                key="temporal_start",
+                help="この開始年から『移動窓（年）』分を対象に計算します。",
+            )
+
+        with c5:
+            top_k = st.number_input(
+                "表示する著者数",
+                min_value=3,
+                max_value=30,
+                value=10,
+                step=1,
+                key="temporal_topk",
+                help="可視化に含める上位著者数（各窓の上位を総合して選びます）。",
+            )
+
+    end_year = start_year + int(win) - 1
+    st.caption(f"📅 対象期間: **{start_year} – {end_year}**（{win}年・シフト幅 {step}年）")
+
+    # === 計算 ===
+    with st.spinner("時系列スコアを計算中..."):
+        scores_long = _sliding_window_scores(
+            df=df,
+            metric=metric,
+            start_year=start_year,
+            win=int(win),
+            step=int(step),
+            ymax=ymax,
         )
 
-    # 2段目: 対象物・研究タイプフィルタ
-    c5, c6 = st.columns([1, 1])
-    with c5:
-        # 候補抽出（表示順はアルファ順）
-        tg_raw = {t for v in df.get("対象物_top3", pd.Series(dtype=str)).fillna("") for t in split_multi(v)}
-        tg_all = sorted(tg_raw)
-        tg_sel = st.multiselect("対象物で絞り込み（部分一致）", tg_all, default=[])
-    with c6:
-        tp_raw = {t for v in df.get("研究タイプ_top3", pd.Series(dtype=str)).fillna("") for t in split_multi(v)}
-        tp_all = sorted(tp_raw)
-        tp_sel = st.multiselect("研究タイプで絞り込み（部分一致）", tp_all, default=[])
+    if scores_long.empty:
+        st.info("該当期間で共著ネットワークが構成できませんでした。条件を調整してください。")
+        return
 
-    # 実行
-    st.markdown("### 📈 中心性スコアの推移（スライドウインドウ）")
-    ts = _timeseries_scores(
-        df=df,
-        ymin=y_from, ymax=y_to,
-        width=int(win), step=int(step),
-        metric=metric,
-        targets=tg_sel, types=tp_sel,
-        top_n_each=10, max_authors=20
+    # 上位著者を選定（全期間での最大スコア上位）
+    top_authors = (
+        scores_long.groupby("author")["score"].max().sort_values(ascending=False).head(int(top_k)).index.tolist()
     )
+    plot_df = scores_long[scores_long["author"].isin(top_authors)].copy()
 
-    if ts.empty:
-        st.info("条件に合う共著ネットワークが構築できませんでした。年範囲やフィルタを調整してください。")
-        return
-
-    # 可視化
-    if HAS_PX:
+    # グラフ描画
+    st.markdown("### 中心性スコアの変遷")
+    if HAS_PLOTLY:
         fig = px.line(
-            ts, x="center_year", y="score", color="author",
+            plot_df,
+            x="window",
+            y="score",
+            color="author",
             markers=True,
-            labels={"center_year": "年（ウインドウ中心）", "score": "中心性スコア", "author": "著者"},
+            template="plotly_white",
+            title=None,
         )
-        fig.update_layout(legend_title_text="著者", height=520, margin=dict(l=10, r=10, t=30, b=10))
+        fig.update_layout(
+            xaxis_title="ウィンドウ（年区間）",
+            yaxis_title="中心性スコア",
+            legend_title_text="著者",
+            height=460,
+            margin=dict(l=10, r=10, t=10, b=10),
+        )
         st.plotly_chart(fig, use_container_width=True)
     else:
-        st.line_chart(
-            ts.pivot_table(index="center_year", columns="author", values="score", aggfunc="mean").sort_index()
+        # Pivot → st.line_chart
+        pivot = plot_df.pivot(index="window", columns="author", values="score").fillna(0.0)
+        st.line_chart(pivot)
+
+    # データ確認用テーブル
+    with st.expander("📄 データを表示", expanded=False):
+        st.dataframe(
+            plot_df.sort_values(["window", "score"], ascending=[True, False]),
+            use_container_width=True,
+            hide_index=True,
         )
 
-    # 直近ウインドウのランキング（参考）
-    st.markdown("### 🔝 直近ウインドウの上位")
-    last_from = max(y_to - int(win) + 1, y_from)
-    last_to = y_to
-    edges_last = build_coauthor_edges(df, last_from, last_to, tg_sel, tp_sel)
-    rank_last = centrality_from_edges(edges_last, metric=metric).head(30)
-    rank_last = rank_last.rename(columns={"author": "著者", "score": "中心性スコア", "coauth_count": "共著数"})
-    st.dataframe(rank_last, use_container_width=True, hide_index=True)
-
-    st.caption("※ 指標の意味：次数=つながりの数 / 媒介=橋渡し度 / 固有ベクトル=影響力（有力者との結び付き）")
+    # コメントのヒント
+    st.caption(
+        "💡 読み方: ラインが上がる著者はその期間で中心性が高まっています。"
+        "ラインが入れ替わるポイントはリーダーシップや共同研究の重心が変化した可能性を示唆します。"
+    )
