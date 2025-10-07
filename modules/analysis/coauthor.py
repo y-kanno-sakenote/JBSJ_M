@@ -2,11 +2,10 @@
 # -*- coding: utf-8 -*-
 """
 共著ネットワーク（研究者のつながりランキング + ネットワーク可視化 + 研究クラスタ）
-- 表: 著者 / 共著数 / つながりスコア
-- 年・対象物・研究タイプでフィルタ
-- コミュニティ検出（クラスタ色分け）
-- クラスタ要約: 代表研究者 / 主要キーワード / 主要機関 / 発行年ピーク
+- 表: 著者 / 共著数 / つながりスコア の3列
 - PyVisは generate_html() による埋め込み
+- 年・対象物・研究タイプでフィルタ
+- コミュニティ検出（クラスタ色分け）＆ クラスタごとの代表研究者／主要キーワード要約
 """
 
 import re
@@ -140,6 +139,7 @@ def _detect_communities(edges: pd.DataFrame):
         from networkx.algorithms.community import greedy_modularity_communities
         comms = list(greedy_modularity_communities(G, weight="weight"))
     except Exception:
+        # フォールバック：ラベル伝播
         from networkx.algorithms.community import asyn_lpa_communities
         comms = list(asyn_lpa_communities(G, weight="weight"))
     node2cid = {}
@@ -154,6 +154,7 @@ def _collect_keywords_for_cluster(df: pd.DataFrame, authors_in_cluster: set[str]
     if df is None or not authors_in_cluster:
         return []
 
+    # どの列をキーワード源にするか（存在するものだけ）
     KEY_COLS = [
         "featured_keywords","primary_keywords","secondary_keywords","llm_keywords",
         "キーワード1","キーワード2","キーワード3","キーワード4","キーワード5",
@@ -161,6 +162,7 @@ def _collect_keywords_for_cluster(df: pd.DataFrame, authors_in_cluster: set[str]
     ]
     use_cols = [c for c in KEY_COLS if c in df.columns]
 
+    # クラスタ著者が含まれる行を抽出
     def row_has_author(a_str):
         return any(a in authors_in_cluster for a in split_authors(a_str))
 
@@ -175,77 +177,32 @@ def _collect_keywords_for_cluster(df: pd.DataFrame, authors_in_cluster: set[str]
                 t = t.strip()
                 if t:
                     bag.append(t)
+
     if not bag:
         return []
     s = pd.Series(bag).value_counts().head(top_k)
     return [f"{k}({v})" for k, v in s.items()]
-
-
-def _collect_institutions_for_cluster(df: pd.DataFrame, authors_in_cluster: set[str], top_k: int = 5):
-    """クラスタの主要機関推定：所属系カラムから頻出を抽出（カラムが無ければ空）"""
-    if df is None or not authors_in_cluster:
-        return []
-    cand_cols = [c for c in df.columns if re.search(r"(所属|機関|大学|研究所|Affiliation|Institution)", str(c), re.I)]
-    if not cand_cols:
-        return []
-
-    def row_has_author(a_str):
-        return any(a in authors_in_cluster for a in split_authors(a_str))
-
-    use = df[df["著者"].fillna("").apply(row_has_author)].copy()
-    if use.empty:
-        return []
-
-    bag = []
-    for c in cand_cols:
-        for cell in use[c].fillna(""):
-            for t in re.split(r"[;；,、，/／|｜\s　]+", str(cell)):
-                t = t.strip()
-                if len(t) >= 2:
-                    bag.append(t)
-    if not bag:
-        return []
-    s = pd.Series(bag).value_counts().head(top_k)
-    return [f"{k}({v})" for k, v in s.items()]
-
-
-def _peak_years_for_cluster(df: pd.DataFrame, authors_in_cluster: set[str], top_k: int = 2):
-    """クラスタの発行年ピーク（最多年）"""
-    if df is None or "発行年" not in df.columns or not authors_in_cluster:
-        return []
-    def row_has_author(a_str):
-        return any(a in authors_in_cluster for a in split_authors(a_str))
-    use = df[df["著者"].fillna("").apply(row_has_author)].copy()
-    if use.empty:
-        return []
-    y = pd.to_numeric(use["発行年"], errors="coerce").dropna().astype(int)
-    if y.empty:
-        return []
-    vc = y.value_counts().sort_values(ascending=False).head(top_k)
-    return [f"{int(k)}年({int(v)}件)" for k, v in vc.items()]
 
 
 def _cluster_summary(df: pd.DataFrame, edges: pd.DataFrame, rank_df: pd.DataFrame, top_n_in_cluster=5):
-    """クラスタごとの代表研究者 / 主要キーワード / 主要機関 / 発行年ピーク を返す"""
+    """クラスタごとの代表研究者（スコア順）と主要キーワード要約を返す"""
     node2cid, comms = _detect_communities(edges)
     if not node2cid:
-        return pd.DataFrame(columns=["クラスタ", "代表研究者（上位）", "主要キーワード", "主要機関", "発行年ピーク"])
-    rows = []
+        return pd.DataFrame(columns=["クラスタ", "代表研究者（上位）", "主要キーワード"])
+    # クラスタ→著者リスト
+    cluster_rows = []
     for cid, members in enumerate(comms, 1):
         authors = list(members)
+        # スコア順で上位を抜粋
         part = rank_df[rank_df["著者"].isin(authors)].sort_values("つながりスコア", ascending=False)
         top_authors = "、".join(part["著者"].head(top_n_in_cluster).tolist()) if not part.empty else ""
-        kw = _collect_keywords_for_cluster(df, set(authors))
-        inst = _collect_institutions_for_cluster(df, set(authors))
-        peaks = _peak_years_for_cluster(df, set(authors))
-        rows.append({
+        keywords = _collect_keywords_for_cluster(df, set(authors))
+        cluster_rows.append({
             "クラスタ": f"C{cid}",
             "代表研究者（上位）": top_authors,
-            "主要キーワード": " / ".join(kw) if kw else "",
-            "主要機関": " / ".join(inst) if inst else "",
-            "発行年ピーク": "・".join(peaks) if peaks else ""
+            "主要キーワード": " / ".join(keywords) if keywords else ""
         })
-    return pd.DataFrame(rows)
+    return pd.DataFrame(cluster_rows)
 
 
 # ========= ネットワーク描画 =========
@@ -269,6 +226,7 @@ def _draw_network(edges: pd.DataFrame, top_nodes=None, min_weight=1, height_px=6
         keep = set(existing) | {nbr for n in existing for nbr in G.neighbors(n)}
         G = G.subgraph(keep).copy()
 
+    # コミュニティ色分け
     node2cid, comms = _detect_communities(edges_use) if color_by_cluster else ({}, [])
     palette = [
         "#4e79a7","#f28e2b","#e15759","#76b7b2","#59a14f",
@@ -319,12 +277,10 @@ def render_coauthor_tab(df: pd.DataFrame):
     with c1:
         year_from, year_to = st.slider("対象年", min_value=ymin, max_value=ymax, value=(ymin, ymax))
     with c2:
-        targets_all = sorted({t for v in df.get("対象物_top3", pd.Series(dtype=str)).fillna("")
-                              for t in re.split(r"[;；,、，/／|｜\s　]+", str(v)) if t})
+        targets_all = sorted({t for v in df.get("対象物_top3", pd.Series(dtype=str)).fillna("") for t in re.split(r"[;；,、，/／|｜\s　]+", str(v)) if t})
         targets_sel = st.multiselect("対象物（部分一致）", targets_all, default=[])
     with c3:
-        types_all = sorted({t for v in df.get("研究タイプ_top3", pd.Series(dtype=str)).fillna("")
-                            for t in re.split(r"[;；,、，/／|｜\s　]+", str(v)) if t})
+        types_all = sorted({t for v in df.get("研究タイプ_top3", pd.Series(dtype=str)).fillna("") for t in re.split(r"[;；,、，/／|｜\s　]+", str(v)) if t})
         types_sel = st.multiselect("研究タイプ（部分一致）", types_all, default=[])
 
     c4, c5, c6 = st.columns([1, 1, 1])
@@ -346,7 +302,7 @@ def render_coauthor_tab(df: pd.DataFrame):
     rank = _centrality_from_edges(edges, metric=metric).head(int(top_n))
     st.dataframe(rank, use_container_width=True, hide_index=True)
 
-    # --- コミュニティ要約（代表研究者 / 主要キーワード / 主要機関 / 発行年ピーク） ---
+    # --- コミュニティ要約（表） ---
     with st.expander("🧩 研究クラスタ（コミュニティ）要約", expanded=True):
         summary_df = _cluster_summary(df, edges, rank_df=rank, top_n_in_cluster=5)
         if summary_df.empty:
