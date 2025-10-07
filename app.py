@@ -299,9 +299,9 @@ with st.sidebar:
     )
 
     if st.button("🧹 永続キャッシュをクリア"):
-        # モジュールのIOラッパを呼ぶ（後述の cache_io.py）
+        # モジュールのIOラッパを呼ぶ（後述の cache_utils.py）
         try:
-            from modules.utils.cache_io import clear_cache
+            from modules.common.cache_utils import clear_cache
             n = clear_cache()
             st.success(f"キャッシュを削除しました（{n} 個）")
         except Exception as e:
