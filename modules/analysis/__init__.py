@@ -20,6 +20,6 @@ def render_analysis_tab(df: pd.DataFrame) -> None:
     with tab2:
         render_temporal_tab(df)
     with tab3:
-        render_targettype_tab(df)
+        render_keyword_tab(df)
     with tab4:
-        render_keyword_tab(df)      # ← 追加
+        render_targettype_tab(df)      # ← 追加
