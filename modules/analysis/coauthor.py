@@ -2,6 +2,9 @@
 # -*- coding: utf-8 -*-
 """
 共著ネットワーク（研究者のつながりランキング + ネットワーク可視化）
+- 表: 著者 / 共著数 / つながりスコア の3列
+- PyVisは generate_html() に変更（ブラウザ自動起動なし）
+- 対象物・研究タイプによるフィルタ機能を復活
 """
 
 import re
@@ -35,16 +38,33 @@ def split_authors(cell):
 @st.cache_data(ttl=600)
 def build_coauthor_edges(df: pd.DataFrame,
                          year_from: int | None = None,
-                         year_to: int | None = None) -> pd.DataFrame:
-    """著者ペアを抽出して共著回数をカウント"""
+                         year_to: int | None = None,
+                         targets_sel: list[str] | None = None,
+                         types_sel: list[str] | None = None) -> pd.DataFrame:
+    """著者ペアを抽出して共著回数をカウント（対象物・研究タイプフィルタ対応）"""
     if df is None or "著者" not in df.columns:
         return pd.DataFrame(columns=["src", "dst", "weight"])
 
     use = df.copy()
-    if "発行年" in df.columns and (year_from is not None and year_to is not None):
+
+    # --- 年範囲フィルタ ---
+    if "発行年" in use.columns and (year_from is not None and year_to is not None):
         y = pd.to_numeric(use["発行年"], errors="coerce")
         use = use[(y >= year_from) & (y <= year_to) | y.isna()]
 
+    # --- 対象物 / 研究タイプフィルタ（部分一致） ---
+    def _norm(s: str) -> str:
+        return re.sub(r"\s+", " ", str(s or "")).strip().lower()
+
+    if targets_sel and "対象物_top3" in use.columns:
+        keys = [_norm(t) for t in targets_sel]
+        use = use[use["対象物_top3"].astype(str).str.lower().apply(lambda v: any(k in v for k in keys))]
+
+    if types_sel and "研究タイプ_top3" in use.columns:
+        keys = [_norm(t) for t in types_sel]
+        use = use[use["研究タイプ_top3"].astype(str).str.lower().apply(lambda v: any(k in v for k in keys))]
+
+    # --- 著者ペア生成 ---
     rows = []
     for authors in use["著者"].fillna(""):
         names = split_authors(authors)
@@ -133,7 +153,7 @@ def _draw_network(edges: pd.DataFrame, top_nodes=None, min_weight=1, height_px=6
         w = int(d.get("weight", 1))
         net.add_edge(s, t, value=w, title=f"共著回数: {w}")
 
-    # 🔧 generate_html() に変更（ブラウザを開かずStreamlit内で表示）
+    # 🔧 generate_html() に変更
     html = net.generate_html(notebook=False)
     st.components.v1.html(html, height=height_px, scrolling=True)
 
@@ -149,24 +169,40 @@ def render_coauthor_tab(df: pd.DataFrame):
     # 年範囲
     if "発行年" in df.columns:
         y = pd.to_numeric(df["発行年"], errors="coerce")
-        ymin, ymax = int(y.min()), int(y.max()) if y.notna().any() else (1980, 2025)
+        if y.notna().any():
+            ymin, ymax = int(y.min()), int(y.max())
+        else:
+            ymin, ymax = 1980, 2025
     else:
         ymin, ymax = 1980, 2025
 
-    c1, c2, c3, c4 = st.columns([1, 1, 1, 1])
+    # --- フィルタUI ---
+    st.caption("対象年・対象物・研究タイプで絞り込み可能です。")
+
+    c1, c2, c3 = st.columns([1.5, 1.2, 1.2])
     with c1:
         year_from, year_to = st.slider("対象年", min_value=ymin, max_value=ymax, value=(ymin, ymax))
     with c2:
-        metric = st.selectbox("スコア計算方式", ["degree", "betweenness", "eigenvector"], index=0)
+        # 対象物
+        targets_all = sorted({t for v in df.get("対象物_top3", pd.Series(dtype=str)).fillna("") for t in re.split(r"[;；,、，/／|｜\s　]+", str(v)) if t})
+        targets_sel = st.multiselect("対象物（部分一致）", targets_all, default=[])
     with c3:
-        top_n = st.number_input("表示件数", min_value=5, max_value=100, value=30, step=5)
+        # 研究タイプ
+        types_all = sorted({t for v in df.get("研究タイプ_top3", pd.Series(dtype=str)).fillna("") for t in re.split(r"[;；,、，/／|｜\s　]+", str(v)) if t})
+        types_sel = st.multiselect("研究タイプ（部分一致）", types_all, default=[])
+
+    c4, c5, c6 = st.columns([1, 1, 1])
     with c4:
+        metric = st.selectbox("スコア計算方式", ["degree", "betweenness", "eigenvector"], index=0)
+    with c5:
+        top_n = st.number_input("表示件数", min_value=5, max_value=100, value=30, step=5)
+    with c6:
         min_w = st.number_input("共著回数の下限 (w≥)", min_value=1, max_value=20, value=2, step=1)
 
     # --- エッジ作成 ---
-    edges = build_coauthor_edges(df, year_from, year_to)
+    edges = build_coauthor_edges(df, year_from, year_to, targets_sel, types_sel)
     if edges.empty:
-        st.info("共著関係が見つかりませんでした。")
+        st.info("共著関係が見つかりませんでした。フィルタを緩めて再度試してください。")
         return
 
     # --- スコア計算 + 表示 ---
