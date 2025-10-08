@@ -22,4 +22,4 @@ def render_analysis_tab(df: pd.DataFrame, use_disk_cache: bool = False) -> None:
     with tab3:
         render_keyword_tab(df)
     with tab4:
-        render_targettype_tab(df)      # ← 追加
+        render_targettype_tab(df)
