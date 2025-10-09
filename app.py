@@ -19,6 +19,11 @@ from pathlib import Path
 from modules.analysis import render_analysis_tab
 import os
 
+# 受け取り: クエリパラメータから著者を事前反映
+qp = st.query_params
+prefill_author = qp.get("author", None)
+
+
 # -------------------- ページ設定 --------------------
 st.set_page_config(page_title="論文検索（統一UI版）", layout="wide")
 
