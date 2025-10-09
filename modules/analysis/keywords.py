@@ -275,13 +275,15 @@ def _render_freq_block(df: pd.DataFrame) -> None:
 
                 try:
                     wc = WordCloud(**wc_kwargs).generate_from_frequencies(freq_dict)
-                    img = wc.to_image()  # ← PIL.Image
-                    st.image(img, use_container_width=True)  # ← そのまま渡す
+                    img = wc.to_image()  # PIL Image オブジェクト
+
+                    # use_container_width はバージョンによって落ちるため安全に除去
+                    st.image(img)
                 except Exception as e:
                     st.error(f"WordCloud の生成に失敗しました: {e}")
         else:
             st.caption("※ wordcloud が未導入のため非表示です。")
-                        
+                                    
 # ========= ② 共起ネットワーク（遅延描画） =========
 def _render_cooccur_block(df: pd.DataFrame) -> None:
     st.markdown("### ② 共起キーワードネットワーク")
