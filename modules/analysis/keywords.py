@@ -270,22 +270,18 @@ def _render_freq_block(df: pd.DataFrame) -> None:
                 else:
                     st.warning("日本語フォントが見つかりません。`fonts/IPAexGothic.ttf` を置くと文字化けしません。")
 
-                # freq_df → dict に明示変換（型の揺れ対策）
+                # freq_df → dict に明示変換
                 freq_dict = {str(row["キーワード"]): int(row["件数"]) for _, row in freq_df.iterrows()}
 
-                # 生成
-                wc = WordCloud(**wc_kwargs).generate_from_frequencies(freq_dict)
-
-                # PIL画像として安全に表示（matplotlib不使用）
-                import io
-                buf = io.BytesIO()
-                img = wc.to_image()
-                img.save(buf, format="PNG")
-                buf.seek(0)
-                st.image(buf, use_container_width=True)
+                try:
+                    wc = WordCloud(**wc_kwargs).generate_from_frequencies(freq_dict)
+                    img = wc.to_image()  # ← PIL.Image
+                    st.image(img, use_container_width=True)  # ← そのまま渡す
+                except Exception as e:
+                    st.error(f"WordCloud の生成に失敗しました: {e}")
         else:
             st.caption("※ wordcloud が未導入のため非表示です。")
-            
+                        
 # ========= ② 共起ネットワーク（遅延描画） =========
 def _render_cooccur_block(df: pd.DataFrame) -> None:
     st.markdown("### ② 共起キーワードネットワーク")
