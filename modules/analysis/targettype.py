@@ -363,14 +363,18 @@ def _render_cooccurrence_block(df: pd.DataFrame) -> None:
     with c4:
         topN = st.number_input("上位のノード数（上限）", min_value=30, max_value=300, value=120, step=10, key="obj_net_topn")
 
-    # 追加フィルタ（軽量）
+    # 年だけ当てたデータから候補を抽出
+    use_year = _apply_filters(df, y_from, y_to, [], [])
+    tg_all = sorted({t for v in use_year.get("対象物_top3", pd.Series(dtype=str)).fillna("")
+                    for t in split_multi(v)})
+    tp_all = sorted({t for v in use_year.get("研究タイプ_top3", pd.Series(dtype=str)).fillna("")
+                    for t in split_multi(v)})
+
     c5, c6 = st.columns([1, 1])
     with c5:
-        tg_sel = st.text_input("対象物で絞り込み（任意・部分一致/空白区切り）", value="", key="obj_net_tg_f")
-        tg_needles = [w for w in _SPLIT_MULTI_RE.split(tg_sel) if w.strip()]
+        tg_needles = st.multiselect("対象物で絞り込み（選択）", tg_all, default=[], key="obj_net_tg_sel")
     with c6:
-        tp_sel = st.text_input("研究タイプで絞り込み（任意・部分一致/空白区切り）", value="", key="obj_net_tp_f")
-        tp_needles = [w for w in _SPLIT_MULTI_RE.split(tp_sel) if w.strip()]
+        tp_needles = st.multiselect("研究タイプで絞り込み（選択）", tp_all, default=[], key="obj_net_tp_sel")
 
     use = _apply_filters(df, y_from, y_to, tg_needles, tp_needles)
 

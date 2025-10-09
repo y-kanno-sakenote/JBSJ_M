@@ -229,12 +229,17 @@ def _render_freq_block(df: pd.DataFrame) -> None:
     with c1:
         y_from, y_to = st.slider("対象年（範囲）", min_value=ymin, max_value=ymax,
                                  value=(ymin, ymax), key="kw_freq_year")
+    # 年だけ一旦適用したデータから候補を抽出（無駄に多くならないように）
+    use_year = _apply_filters(df, y_from, y_to, [], [])
+    tg_all = sorted({t for v in use_year.get("対象物_top3", pd.Series(dtype=str)).fillna("")
+                    for t in split_multi(v)})
+    tp_all = sorted({t for v in use_year.get("研究タイプ_top3", pd.Series(dtype=str)).fillna("")
+                    for t in split_multi(v)})
+
     with c2:
-        tg_txt = st.text_input("対象物で絞り込み（空白区切り・部分一致）", value="", key="kw_freq_tg")
-        tg_needles = [w for w in _SPLIT_MULTI_RE.split(tg_txt) if w.strip()]
+        tg_needles = st.multiselect("対象物で絞り込み（選択）", tg_all, default=[], key="kw_freq_tg_sel")
     with c3:
-        tp_txt = st.text_input("研究タイプで絞り込み（空白区切り・部分一致）", value="", key="kw_freq_tp")
-        tp_needles = [w for w in _SPLIT_MULTI_RE.split(tp_txt) if w.strip()]
+        tp_needles = st.multiselect("研究タイプで絞り込み（選択）", tp_all, default=[], key="kw_freq_tp_sel")
     with c4:
         topn = st.number_input("表示件数", min_value=5, max_value=100, value=30, step=5, key="kw_freq_topn")
 
@@ -283,7 +288,7 @@ def _render_freq_block(df: pd.DataFrame) -> None:
                     st.error(f"WordCloud の生成に失敗しました: {e}")
         else:
             st.caption("※ wordcloud が未導入のため非表示です。")
-                                    
+
 # ========= ② 共起ネットワーク（遅延描画） =========
 def _render_cooccur_block(df: pd.DataFrame) -> None:
     st.markdown("### ② 共起キーワードネットワーク")
@@ -300,14 +305,19 @@ def _render_cooccur_block(df: pd.DataFrame) -> None:
     with c4:
         st.caption("重いので下のボタンで明示的に描画します。")
 
+    # 年だけ先に当てて候補を抽出
+    use_year = _apply_filters(df, y_from, y_to, [], [])
+    tg_all = sorted({t for v in use_year.get("対象物_top3", pd.Series(dtype=str)).fillna("")
+                    for t in split_multi(v)})
+    tp_all = sorted({t for v in use_year.get("研究タイプ_top3", pd.Series(dtype=str)).fillna("")
+                    for t in split_multi(v)})
+
     c5, c6 = st.columns([1,1])
     with c5:
-        tg_txt = st.text_input("対象物で絞り込み（空白区切り・部分一致）", value="", key="kw_co_tg")
-        tg_needles = [w for w in _SPLIT_MULTI_RE.split(tg_txt) if w.strip()]
+        tg_needles = st.multiselect("対象物で絞り込み（選択）", tg_all, default=[], key="kw_co_tg_sel")
     with c6:
-        tp_txt = st.text_input("研究タイプで絞り込み（空白区切り・部分一致）", value="", key="kw_co_tp")
-        tp_needles = [w for w in _SPLIT_MULTI_RE.split(tp_txt) if w.strip()]
-
+        tp_needles = st.multiselect("研究タイプで絞り込み（選択）", tp_all, default=[], key="kw_co_tp_sel")
+        
     use = _apply_filters(df, y_from, y_to, tg_needles, tp_needles)
 
     # キャッシュキー
