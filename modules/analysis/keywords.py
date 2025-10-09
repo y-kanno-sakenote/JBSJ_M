@@ -29,6 +29,22 @@ from typing import List, Tuple, Dict
 import pandas as pd
 import streamlit as st
 
+from pathlib import Path
+
+def _get_japanese_font_path() -> str | None:
+    """日本語フォントのパスを返す。プロジェクト同梱を最優先。"""
+    candidates = [
+        "fonts/IPAexGothic.ttf",                            # ← 同梱推奨
+        "/usr/share/fonts/opentype/ipafont-gothic/ipagp.ttf",
+        "/usr/share/fonts/opentype/ipafont-mincho/ipam.ttf",
+        "/usr/share/fonts/truetype/noto/NotoSansCJK-Regular.ttc",
+        "/System/Library/Fonts/ヒラギノ角ゴシック W3.ttc",      # mac
+    ]
+    for p in candidates:
+        if Path(p).exists():
+            return p
+    return None
+
 # ==== Optional deps（無くても動く） ====
 try:
     import plotly.express as px  # type: ignore
@@ -243,13 +259,29 @@ def _render_freq_block(df: pd.DataFrame) -> None:
     with st.expander("☁ WordCloud（任意）", expanded=False):
         if HAS_WC:
             if st.button("生成する", key="kw_wc_btn"):
+                # ← 日本語フォントを自動検出
+                font_path = _get_japanese_font_path()
+
+                # 表示中の topN 頻度を dict に
                 textfreq = {row["キーワード"]: int(row["件数"]) for _, row in freq_df.iterrows()}
-                wc = WordCloud(width=800, height=400, background_color="white", font_path=None)
-                img = wc.generate_from_frequencies(textfreq).to_image()
-                st.image(img, use_container_width=True)
+
+                wc_kwargs = dict(
+                    width=900,
+                    height=450,
+                    background_color="white",
+                    prefer_horizontal=1.0,
+                    collocations=False,
+                )
+                if font_path:
+                    wc_kwargs["font_path"] = font_path
+                else:
+                    st.warning("日本語フォントが見つかりません。`fonts/IPAexGothic.ttf` を置くと文字化けしません。")
+
+                wc = WordCloud(**wc_kwargs).generate_from_frequencies(textfreq)
+                # matplotlib なしでOK：PIL画像を直接表示
+                st.image(wc.to_image(), use_container_width=True)
         else:
             st.caption("※ wordcloud が未導入のため非表示です。")
-
 
 # ========= ② 共起ネットワーク（遅延描画） =========
 def _render_cooccur_block(df: pd.DataFrame) -> None:
