@@ -259,30 +259,33 @@ def _render_freq_block(df: pd.DataFrame) -> None:
     with st.expander("☁ WordCloud（任意）", expanded=False):
         if HAS_WC:
             if st.button("生成する", key="kw_wc_btn"):
-                # ← 日本語フォントを自動検出
+                # 日本語フォントの解決
                 font_path = _get_japanese_font_path()
-
-                # 表示中の topN 頻度を dict に
-                textfreq = {row["キーワード"]: int(row["件数"]) for _, row in freq_df.iterrows()}
-
                 wc_kwargs = dict(
-                    width=900,
-                    height=450,
-                    background_color="white",
-                    prefer_horizontal=1.0,
-                    collocations=False,
+                    width=900, height=450, background_color="white",
+                    prefer_horizontal=1.0, collocations=False
                 )
                 if font_path:
                     wc_kwargs["font_path"] = font_path
                 else:
                     st.warning("日本語フォントが見つかりません。`fonts/IPAexGothic.ttf` を置くと文字化けしません。")
 
-                wc = WordCloud(**wc_kwargs).generate_from_frequencies(textfreq)
-                # matplotlib なしでOK：PIL画像を直接表示
-                st.image(wc.to_image(), use_container_width=True)
+                # freq_df → dict に明示変換（型の揺れ対策）
+                freq_dict = {str(row["キーワード"]): int(row["件数"]) for _, row in freq_df.iterrows()}
+
+                # 生成
+                wc = WordCloud(**wc_kwargs).generate_from_frequencies(freq_dict)
+
+                # PIL画像として安全に表示（matplotlib不使用）
+                import io
+                buf = io.BytesIO()
+                img = wc.to_image()
+                img.save(buf, format="PNG")
+                buf.seek(0)
+                st.image(buf, use_container_width=True)
         else:
             st.caption("※ wordcloud が未導入のため非表示です。")
-
+            
 # ========= ② 共起ネットワーク（遅延描画） =========
 def _render_cooccur_block(df: pd.DataFrame) -> None:
     st.markdown("### ② 共起キーワードネットワーク")
