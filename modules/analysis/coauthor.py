@@ -1,3 +1,4 @@
+# modules/analysis/coauthor.py
 # -*- coding: utf-8 -*-
 """
 共著ネットワーク（研究者のつながりランキング + ネットワーク可視化）
@@ -6,6 +7,7 @@
 - 中心性指標は日本語表記で統一（次数中心性 / 媒介中心性 / 固有ベクトル中心性）
 - ネットワーク描画は「ボタン」押下時のみ（PyVis / networkx があれば）
 - PyVis 埋め込みは generate_html() を使用（ブラウザ自動起動を回避）
+- サブタブ「⏳ 経年変化」は coauthor_temporal.py が存在する場合のみ自動で表示
 """
 
 from __future__ import annotations
@@ -15,6 +17,13 @@ from typing import List, Tuple
 
 import pandas as pd
 import streamlit as st
+
+# ---- サブタブ（経年変化）の相対import：存在しない場合も落とさない ----
+try:
+    from .coauthor_temporal import render_coauthor_temporal_subtab  # 同ディレクトリ想定
+    HAS_TEMPORAL = True
+except Exception:
+    HAS_TEMPORAL = False
 
 # --- Optional deps ---
 try:
@@ -236,7 +245,8 @@ def _render_copy_grid(authors: List[str]) -> None:
     import streamlit.components.v1 as components
     components.html(html, height=400, scrolling=True)
 
-# ========= UI構築 =========
+
+# ========= UI構築（サブタブ対応） =========
 def render_coauthor_tab(df: pd.DataFrame, use_disk_cache: bool = False):
     st.markdown("## 👥 研究者のつながり分析（共著ネットワーク）")
     st.caption("共著関係が多いほどネットワークの中心に位置しやすく、橋渡し役や影響力の強さも指標から読み取れます。")
@@ -245,80 +255,91 @@ def render_coauthor_tab(df: pd.DataFrame, use_disk_cache: bool = False):
         st.warning("著者データが見つかりません。")
         return
 
-    # 年範囲
-    if "発行年" in df.columns:
-        y = pd.to_numeric(df["発行年"], errors="coerce")
-        if y.notna().any():
-            ymin, ymax = int(y.min()), int(y.max())
+    # タブ構成（経年変化サブタブはモジュールがあるときだけ）
+    if HAS_TEMPORAL:
+        tab_main, tab_temp = st.tabs(["🔝 ランキング・ネットワーク", "⏳ 経年変化"])
+    else:
+        (tab_main,) = st.tabs(["🔝 ランキング・ネットワーク"])
+
+    # ===== メインタブ =====
+    with tab_main:
+        # 年範囲
+        if "発行年" in df.columns:
+            y = pd.to_numeric(df["発行年"], errors="coerce")
+            if y.notna().any():
+                ymin, ymax = int(y.min()), int(y.max())
+            else:
+                ymin, ymax = 1980, 2025
         else:
             ymin, ymax = 1980, 2025
-    else:
-        ymin, ymax = 1980, 2025
 
-    # フィルタ（選択式）
-    # 候補抽出
-    targets_all = sorted({w for v in df.get("対象物_top3", pd.Series(dtype=str)).fillna("") for w in split_multi(v)})
-    types_all   = sorted({w for v in df.get("研究タイプ_top3", pd.Series(dtype=str)).fillna("") for w in split_multi(v)})
+        # フィルタ（選択式）
+        targets_all = sorted({w for v in df.get("対象物_top3", pd.Series(dtype=str)).fillna("") for w in split_multi(v)})
+        types_all   = sorted({w for v in df.get("研究タイプ_top3", pd.Series(dtype=str)).fillna("") for w in split_multi(v)})
 
-    c1, c2, c3= st.columns([1, 1, 1])
-    with c1:
-        year_from, year_to = st.slider("対象年（範囲）", min_value=ymin, max_value=ymax, value=(ymin, ymax))
-    with c2:
-        tg_sel = st.multiselect("対象物で絞り込み", options=targets_all, default=[])
-    with c3:
-        tp_sel = st.multiselect("研究タイプで絞り込み", options=types_all, default=[])
+        c1, c2, c3= st.columns([1, 1, 1])
+        with c1:
+            year_from, year_to = st.slider("対象年（範囲）", min_value=ymin, max_value=ymax, value=(ymin, ymax))
+        with c2:
+            tg_sel = st.multiselect("対象物で絞り込み", options=targets_all, default=[])
+        with c3:
+            tp_sel = st.multiselect("研究タイプで絞り込み", options=types_all, default=[])
 
-    c4, c5, c6 = st.columns([1, 1, 1])
-    with c4:
-        metric = st.selectbox(
-            "中心性指標",
-            ["degree", "betweenness", "eigenvector"],
-            index=0,
-            format_func=lambda x: {
-                "degree": "次数（つながりの数）",
-                "betweenness": "媒介（橋渡し度）",
-                "eigenvector": "固有ベクトル（影響力）",
-            }[x],
-            help="networkx が未導入の場合は簡易スコア（共著数の合計）で代替します。",
-        )
-    with c5:
-        top_n = st.number_input("ランキング件数", min_value=5, max_value=100, value=30, step=5)
-    with c6:
-        min_w = st.number_input("描画する最小共著回数 (w≥)", min_value=1, max_value=20, value=2, step=1)
+        c4, c5, c6 = st.columns([1, 1, 1])
+        with c4:
+            metric = st.selectbox(
+                "中心性指標",
+                ["degree", "betweenness", "eigenvector"],
+                index=0,
+                format_func=lambda x: {
+                    "degree": "次数（つながりの数）",
+                    "betweenness": "媒介（橋渡し度）",
+                    "eigenvector": "固有ベクトル（影響力）",
+                }[x],
+                help="networkx が未導入の場合は簡易スコア（共著数の合計）で代替します。",
+            )
+        with c5:
+            top_n = st.number_input("ランキング件数", min_value=5, max_value=100, value=30, step=5)
+        with c6:
+            min_w = st.number_input("描画する最小共著回数 (w≥)", min_value=1, max_value=20, value=2, step=1)
 
-    # ---- キャッシュキー（オプション） ----
-    cache_key = f"coauth_edges|{year_from}-{year_to}|tg{','.join(tg_sel)}|tp{','.join(tp_sel)}"
-    edges = None
-    if use_disk_cache and HAS_DISK_CACHE:
-        path = cache_csv_path("coauthor_edges", cache_key)
-        cached = load_csv_if_exists(path)
-        if cached is not None:
-            edges = cached
-
-    if edges is None:
-        edges = build_coauthor_edges(df, year_from, year_to, tg_sel, tp_sel)
+        # ---- キャッシュキー（オプション） ----
+        cache_key = f"coauth_edges|{year_from}-{year_to}|tg{','.join(tg_sel)}|tp{','.join(tp_sel)}"
+        edges = None
         if use_disk_cache and HAS_DISK_CACHE:
-            save_csv(edges, cache_csv_path("coauthor_edges", cache_key))
+            path = cache_csv_path("coauthor_edges", cache_key)
+            cached = load_csv_if_exists(path)
+            if cached is not None:
+                edges = cached
 
-    if edges.empty:
-        st.info("共著関係が見つかりませんでした。条件を調整してください。")
-        return
+        if edges is None:
+            edges = build_coauthor_edges(df, year_from, year_to, tg_sel, tp_sel)
+            if use_disk_cache and HAS_DISK_CACHE:
+                save_csv(edges, cache_csv_path("coauthor_edges", cache_key))
 
-    # --- スコア表示（表の仕様は維持） ---
-    st.markdown("### 🔝 研究者のつながりランキング")
-    rank = centrality_from_edges(edges, metric=metric).head(int(top_n))
-    st.dataframe(rank, use_container_width=True, hide_index=True)
+        if edges.empty:
+            st.info("共著関係が見つかりませんでした。条件を調整してください。")
+            return
 
-    st.caption("※ 指標の意味：次数=つながりの数 / 媒介=橋渡し度 / 固有ベクトル=影響力（有力者との結び付き）")
+        # --- スコア表示（表の仕様は維持） ---
+        st.markdown("### 🔝 研究者のつながりランキング")
+        rank = centrality_from_edges(edges, metric=metric).head(int(top_n))
+        st.dataframe(rank, use_container_width=True, hide_index=True)
+        st.caption("※ 指標の意味：次数=つながりの数 / 媒介=橋渡し度 / 固有ベクトル=影響力（有力者との結び付き）")
 
-    # --- 補助：著者名のクイックコピー（別枠・表は崩さない） ---
-    with st.expander("📋 著者名をすぐコピー（表はそのまま・補助機能）", expanded=False):
-        _render_copy_grid(rank["著者"].tolist())
+        # --- 補助：著者名のクイックコピー（別枠・表は崩さない） ---
+        with st.expander("📋 著者名をすぐコピー（表はそのまま・補助機能）", expanded=False):
+            _render_copy_grid(rank["著者"].tolist())
 
-    # --- 可視化（遅延描画） ---
-    with st.expander("🕸️ ネットワークを可視化（任意・依存あり）", expanded=False):
-        st.caption("共著関係をインタラクティブに可視化します（networkx / pyvis が必要）。")
-        top_only = st.toggle("上位ランキングの周辺だけ表示（軽量）", value=True)
-        top_nodes = rank["著者"].tolist() if top_only else None
-        if st.button("🌐 ネットワークを描画する"):
-            _draw_network(edges, top_nodes=top_nodes, min_weight=int(min_w), height_px=700)
+        # --- 可視化（遅延描画） ---
+        with st.expander("🕸️ ネットワークを可視化（任意・依存あり）", expanded=False):
+            st.caption("共著関係をインタラクティブに可視化します（networkx / pyvis が必要）。")
+            top_only = st.toggle("上位ランキングの周辺だけ表示（軽量）", value=True)
+            top_nodes = rank["著者"].tolist() if top_only else None
+            if st.button("🌐 ネットワークを描画する"):
+                _draw_network(edges, top_nodes=top_nodes, min_weight=int(min_w), height_px=700)
+
+    # ===== サブタブ：経年変化 =====
+    if HAS_TEMPORAL:
+        with tab_temp:
+            render_coauthor_temporal_subtab(df, use_disk_cache=use_disk_cache)
