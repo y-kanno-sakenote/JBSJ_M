@@ -1,4 +1,3 @@
-# modules/analysis/coauthor.py
 # -*- coding: utf-8 -*-
 """
 共著ネットワーク（研究者のつながりランキング + ネットワーク可視化）
@@ -58,7 +57,7 @@ def norm_key(s: str) -> str:
     return s.lower()
 
 def col_contains_any(df_col: pd.Series, needles: List[str]) -> pd.Series:
-    """列（文字列）に needles のいずれかが部分一致するか（小文字・空白正規化）。"""
+    """列（文字列）に needles のいずれかが部分一致するか（小文字・全角空白正規化）。"""
     if not needles:
         return pd.Series([True] * len(df_col), index=df_col.index)
     lo_needles = [norm_key(n) for n in needles]
@@ -204,6 +203,39 @@ def _draw_network(edges: pd.DataFrame,
     st.components.v1.html(html, height=height_px, scrolling=True)
 
 
+# ========= コピー用の軽量HTMLグリッド =========
+def _render_copy_grid(authors: List[str]) -> None:
+    """表は崩さず、別枠で著者名のコピーUXを提供する小さなHTMLグリッド。"""
+    if not authors:
+        return
+    html = """
+    <style>
+      .copy-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 8px; }
+      .copy-chip { display:flex; align-items:center; justify-content:space-between;
+                   padding:6px 10px; background:#f5f5f7; border:1px solid #ddd; border-radius:8px; font-size:13px; }
+      .copy-chip button { border:none; background:#e9e9ee; padding:4px 8px; border-radius:6px; cursor:pointer; }
+      .copy-chip button:hover { background:#dcdce3; }
+    </style>
+    <div class="copy-grid">
+    """
+    for name in authors:
+        safe_text = str(name).replace("\\", "\\\\").replace("'", "\\'")
+        html += f"""
+        <div class="copy-chip">
+          <span>{safe_text}</span>
+          <button onclick="navigator.clipboard.writeText('{safe_text}');
+                           const n=document.createElement('div');
+                           n.textContent='📋「{safe_text}」をコピーしました';
+                           n.style='position:fixed;bottom:80px;right:30px;padding:10px 18px;background:#333;color:#fff;border-radius:8px;opacity:0.94;font-size:13px;z-index:9999';
+                           document.body.appendChild(n); setTimeout(()=>n.remove(),1400);">
+            📋
+          </button>
+        </div>
+        """
+    html += "</div>"
+    import streamlit.components.v1 as components
+    components.html(html, height=400, scrolling=True)
+
 # ========= UI構築 =========
 def render_coauthor_tab(df: pd.DataFrame, use_disk_cache: bool = False):
     st.markdown("## 👥 研究者のつながり分析（共著ネットワーク）")
@@ -272,12 +304,16 @@ def render_coauthor_tab(df: pd.DataFrame, use_disk_cache: bool = False):
         st.info("共著関係が見つかりませんでした。条件を調整してください。")
         return
 
-    # --- スコア表示 ---
+    # --- スコア表示（表の仕様は維持） ---
     st.markdown("### 🔝 研究者のつながりランキング")
     rank = centrality_from_edges(edges, metric=metric).head(int(top_n))
     st.dataframe(rank, use_container_width=True, hide_index=True)
 
     st.caption("※ 指標の意味：次数=つながりの数 / 媒介=橋渡し度 / 固有ベクトル=影響力（有力者との結び付き）")
+
+    # --- 補助：著者名のクイックコピー（別枠・表は崩さない） ---
+    with st.expander("📋 著者名をすぐコピー（表はそのまま・補助機能）", expanded=False):
+        _render_copy_grid(rank["著者"].tolist())
 
     # --- 可視化（遅延描画） ---
     with st.expander("🕸️ ネットワークを可視化（任意・依存あり）", expanded=False):
