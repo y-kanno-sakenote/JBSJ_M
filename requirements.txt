@@ -7,3 +7,4 @@ numpy
 plotly==5.24.1
 networkx>=3.0
 pyvis>=0.3.2
+wordcloud
