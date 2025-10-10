@@ -1,360 +1,305 @@
 # modules/analysis/temporal.py
 # -*- coding: utf-8 -*-
 """
-⏳ 経年変化（中心性スコアの移動窓トレンド）
-
-このタブは、特定期間の共著ネットワークから「研究者の中心性」が
-時間とともにどう移り変わったかを、移動窓（スライドする年区間）で可視化します。
-
-■ できること
-- フィルタ：対象物・研究タイプで論文集合を絞り込み（部分一致）
-- 指標選択：degree / betweenness / eigenvector を切り替え
-- 期間設定：ウィンドウ幅（年）・シフト幅（年）・開始年で移動窓を定義
-- 可視化：各移動窓で算出した中心性スコアの推移を折れ線表示
-- 実務補助：直近ウィンドウのランキング（著者 / 共著数 / 中心性スコア）を確認
-
-■ 用語ざっくり
-- 次数中心性（degree）：どれだけ多くの相手とつながっているか（横の広さ）
-- 媒介中心性（betweenness）：研究者同士の橋渡しの度合い（ネットワークの要）
-- 固有ベクトル中心性（eigenvector）：影響力のある相手とつながっているほど高い（影響の質）
-  ※ networkx が未導入の場合は、近似として「共著数の合計」をスコアに使います。
-
-■ 表示の読み方
-- 折れ線1本＝1人の研究者。ラインが上昇すればその期間で影響力が増加。
-- フィルタを使うと、特定領域（例：清酒×微生物）だけの“リーダー交代”が見えます。
+発行年別の論文件数推移（トレンド可視化）
+- 共通フィルタ：年レンジ + 移動平均のみ（対象物・研究タイプは共通からは除外）
+- サブタブ構成：
+  ① 全体推移：全論文の年次推移
+  ② 対象物の推移：対象物をチェックボックスで選択、研究タイプでフィルタ可能
+  ③ 研究タイプの推移：研究タイプをチェックボックスで選択、対象物でフィルタ可能
+- Plotly が無ければ st.line_chart にフォールバック
+- 計算はキャッシュ（@st.cache_data）で軽量化
 """
 
 from __future__ import annotations
-import itertools
 import re
+from typing import List, Tuple
+
 import pandas as pd
 import streamlit as st
 
-# ---- Optional deps（無ければ自動フォールバック）----
+# ---- Optional deps ----
 try:
-    import networkx as nx
-    HAS_NX = True
+    import plotly.express as px  # type: ignore
+    HAS_PX = True
 except Exception:
-    HAS_NX = False
-
-try:
-    import plotly.express as px
-    HAS_PLOTLY = True
-except Exception:
-    HAS_PLOTLY = False
+    HAS_PX = False
 
 
-# ========= 文字列ユーティリティ =========
-def _split_authors(cell) -> list[str]:
-    """著者セルを区切り記号で分割。空要素は除去。"""
-    if cell is None:
-        return []
-    return [w.strip() for w in re.split(r"[;；,、，/／|｜]+", str(cell)) if w.strip()]
+# ========= ユーティリティ =========
+_SPLIT_MULTI_RE = re.compile(r"[;；,、，/／|｜\s　]+")
 
-def _split_multi(s):
-    """'清酒; ワイン / ビール' のような複合文字列を分割。"""
+def split_multi(s) -> List[str]:
     if not s:
         return []
-    return [w.strip() for w in re.split(r"[;；,、，/／|｜\s　]+", str(s)) if w.strip()]
+    return [w.strip() for w in _SPLIT_MULTI_RE.split(str(s)) if w.strip()]
 
-def _norm_key(s: str) -> str:
-    """小文字化＋全角/連続空白の正規化（部分一致用）。"""
-    s = str(s or "")
-    s = s.replace("\u00A0", " ")
+def norm_key(s: str) -> str:
+    s = str(s or "").replace("\u00A0", " ")
     s = re.sub(r"\s+", " ", s).strip()
     return s.lower()
 
-def _col_contains_any(df_col: pd.Series, needles: list[str]) -> pd.Series:
-    """列に対して needles のいずれかが部分一致するか（正規化して評価）。"""
+def col_contains_any(df_col: pd.Series, needles: List[str]) -> pd.Series:
+    """列の文字列に needles のいずれかが部分一致（小文字・空白正規化）"""
     if not needles:
         return pd.Series([True] * len(df_col), index=df_col.index)
-    lo_needles = [_norm_key(n) for n in needles]
+    lo_needles = [norm_key(n) for n in needles]
     def _hit(v: str) -> bool:
-        s = _norm_key(v)
+        s = norm_key(v)
         return any(n in s for n in lo_needles)
     return df_col.fillna("").astype(str).map(_hit)
 
-
-# ========= 年レンジユーティリティ =========
-def _year_bounds(df: pd.DataFrame) -> tuple[int, int]:
-    """DFから発行年の最小/最大を取得。無い場合はデフォルト値。"""
-    if "発行年" in df.columns:
-        y = pd.to_numeric(df["発行年"], errors="coerce")
-        if y.notna().any():
-            return int(y.min()), int(y.max())
-    return 1980, 2025
-
-
-# ========= エッジ構築（移動窓で使い回すのでキャッシュ） =========
 @st.cache_data(ttl=600, show_spinner=False)
-def _build_edges(df: pd.DataFrame, y_from: int, y_to: int) -> pd.DataFrame:
-    """
-    [y_from, y_to] の範囲で共著エッジを構築。
-    返り値: ['src','dst','weight']
-    """
-    use = df.copy()
+def _year_min_max(df: pd.DataFrame) -> Tuple[int, int]:
+    if "発行年" not in df.columns:
+        return (1980, 2025)
+    y = pd.to_numeric(df["発行年"], errors="coerce")
+    if y.notna().any():
+        return (int(y.min()), int(y.max()))
+    return (1980, 2025)
 
-    # 年レンジで絞り込み（欠損年は通す＝レビュー等を残す）
+def _apply_year(df: pd.DataFrame, y_from: int, y_to: int) -> pd.DataFrame:
+    use = df.copy()
     if "発行年" in use.columns:
         y = pd.to_numeric(use["発行年"], errors="coerce")
         use = use[(y >= y_from) & (y <= y_to) | y.isna()]
+    return use
 
-    # 著者ペアを重み付きでカウント
-    rows = []
-    for authors in use.get("著者", pd.Series(dtype=str)).fillna(""):
-        names = sorted(set(_split_authors(authors)))
-        for s, t in itertools.combinations(names, 2):
-            rows.append((s, t))
-
-    if not rows:
-        return pd.DataFrame(columns=["src", "dst", "weight"])
-
-    edges = pd.DataFrame(rows, columns=["src", "dst"])
-    edges["pair"] = edges.apply(lambda r: tuple(sorted([r["src"], r["dst"]])), axis=1)
-    edges = edges.groupby("pair").size().reset_index(name="weight")
-    edges[["src", "dst"]] = pd.DataFrame(edges["pair"].tolist(), index=edges.index)
-    edges = edges.drop(columns=["pair"]).sort_values("weight", ascending=False).reset_index(drop=True)
-    return edges[["src", "dst", "weight"]]
-
-
-# ========= 中心性スコア（networkx 無しでも動く） =========
-def _centrality_from_edges(edges: pd.DataFrame, metric: str = "degree") -> pd.Series:
-    """
-    エッジ→中心性スコア（Series: index=author, value=score）
-    - networkx 無し：重み付き次数（共著重みの合計）で近似
-    """
-    if edges.empty:
-        return pd.Series(dtype=float)
-
-    if not HAS_NX:
-        deg = (
-            pd.concat(
-                [edges.groupby("src")["weight"].sum(), edges.groupby("dst")["weight"].sum()],
-                axis=1,
-            )
-            .fillna(0)
-            .sum(axis=1)
-            .sort_values(ascending=False)
-        )
-        deg.name = "score"
-        return deg
-
-    # networkx あり：本格計算
-    G = nx.Graph()
-    for _, r in edges.iterrows():
-        s, t, w = r["src"], r["dst"], float(r["weight"])
-        if G.has_edge(s, t):
-            G[s][t]["weight"] += w
-        else:
-            G.add_edge(s, t, weight=w)
-
-    if metric == "betweenness":
-        cen = nx.betweenness_centrality(G, weight="weight", normalized=True)
-    elif metric == "eigenvector":
-        try:
-            cen = nx.eigenvector_centrality_numpy(G, weight="weight")
-        except Exception:
-            cen = nx.degree_centrality(G)  # フォールバック
-    else:
-        cen = nx.degree_centrality(G)
-
-    s = pd.Series(cen, dtype=float).sort_values(ascending=False)
-    s.name = "score"
-    return s
-
-
-# ========= 時系列（移動窓）スコア =========
 @st.cache_data(ttl=600, show_spinner=False)
-def _sliding_window_scores(
-    df: pd.DataFrame,
-    metric: str,
-    start_year: int,
-    win: int,
-    step: int,
-    ymax: int,
-) -> pd.DataFrame:
-    """
-    start_year から win 年の窓を step 年ずつ右へスライドしながら中心性を算出。
-    返り値: long形式 ['window','author','score']（window は "YYYY-YYYY" 文字列）
-    """
-    records = []
-    s = start_year
-    while s <= ymax - win + 1:
-        e = s + win - 1
-        edges = _build_edges(df, s, e)
-        scores = _centrality_from_edges(edges, metric=metric)
-        if not scores.empty:
-            rec = pd.DataFrame(
-                {"window": f"{s}-{e}", "author": scores.index, "score": scores.values}
-            )
-            records.append(rec)
-        s += step
+def _yearly_total_counts(df: pd.DataFrame) -> pd.Series:
+    """年ごとの総件数"""
+    if "発行年" not in df.columns:
+        return pd.Series(dtype=int)
+    y = pd.to_numeric(df["発行年"], errors="coerce").dropna().astype(int)
+    if y.empty:
+        return pd.Series(dtype=int)
+    return y.value_counts().sort_index()
 
-    if not records:
-        return pd.DataFrame(columns=["window", "author", "score"])
-    return pd.concat(records, ignore_index=True)
+@st.cache_data(ttl=600, show_spinner=False)
+def _yearly_counts_by(df: pd.DataFrame, col: str) -> pd.DataFrame:
+    """年×項目の件数（同一論文内の重複は1件としてカウント）"""
+    if col not in df.columns or "発行年" not in df.columns:
+        return pd.DataFrame(columns=["発行年", col, "count"])
+    rows = []
+    for _, r in df.iterrows():
+        y = pd.to_numeric(r.get("発行年"), errors="coerce")
+        if pd.isna(y):
+            continue
+        items = list(dict.fromkeys(split_multi(r.get(col, ""))))
+        for it in items:
+            rows.append((int(y), it))
+    if not rows:
+        return pd.DataFrame(columns=["発行年", col, "count"])
+    c = pd.DataFrame(rows, columns=["発行年", col]).value_counts().reset_index(name="count")
+    return c.sort_values(["発行年", "count"], ascending=[True, False]).reset_index(drop=True)
+
+def _plot_lines_from_pivot(piv: pd.DataFrame, x_label: str = "発行年"):
+    """ピボット(index=年, columns=項目, values=件数)を安全に折れ線描画。
+       - x列を必ず用意
+       - データ列が1つも無い場合は早期リターン
+       - stack→reset_index の列名は位置で「項目」「件数」に付け替え
+       - 数値化/欠損処理/空チェックを追加
+    """
+    if piv is None or piv.empty:
+        st.info("該当データがありません。条件を見直してください。")
+        return
+
+    df_plot = piv.copy()
+
+    # '発行年' 列を必ず作る（インデックス名が無い場合にも対応）
+    if x_label not in df_plot.columns:
+        df_plot.index.name = df_plot.index.name or x_label
+        if df_plot.index.name != x_label:
+            # 別名なら後でリネーム
+            df_plot = df_plot.reset_index().rename(columns={df_plot.columns[0]: x_label})
+        else:
+            df_plot = df_plot.reset_index()
+
+    # x以外のデータ列が無い場合は終了
+    data_cols = [c for c in df_plot.columns if c != x_label]
+    if not data_cols:
+        st.info("描画対象の項目列がありません。条件を見直してください。")
+        return
+
+    # ロング化（列名は位置でリネーム）
+    try:
+        df_long = (
+            df_plot
+            .set_index(x_label)[data_cols]
+            .stack(dropna=False)
+            .reset_index()
+        )
+    except Exception as e:
+        st.info(f"描画用のデータ整形に失敗しました（整形時例外）。{e}")
+        return
+
+    # 位置ベースで安全にリネーム： [発行年, 項目, 件数]
+    if len(df_long.columns) < 3:
+        st.info("描画用のデータ整形に失敗しました（列の欠落）。条件を見直してください。")
+        return
+    df_long = df_long.rename(columns={
+        df_long.columns[0]: x_label,
+        df_long.columns[1]: "項目",
+        df_long.columns[2]: "件数",
+    })
+
+    # 型整形
+    df_long[x_label] = pd.to_numeric(df_long[x_label], errors="coerce")
+    df_long["件数"] = pd.to_numeric(df_long["件数"], errors="coerce")
+
+    # 無効値処理
+    df_long = df_long.dropna(subset=[x_label])
+    if df_long.empty:
+        st.info("該当データがありません。条件を見直してください。")
+        return
+
+    # 件数が全てNaN → 0に
+    if df_long["件数"].notna().sum() == 0:
+        df_long["件数"] = 0
+
+    df_long = df_long.fillna({"件数": 0}).sort_values([x_label, "項目"])
+
+    # 可視化
+    if HAS_PX:
+        fig = px.line(df_long, x=x_label, y="件数", color="項目", markers=True)
+        fig.update_layout(height=520, margin=dict(l=10, r=10, t=30, b=10), legend_title_text="項目")
+        st.plotly_chart(fig, use_container_width=True)
+    else:
+        wide = df_long.pivot_table(index=x_label, columns="項目", values="件数", aggfunc="mean").sort_index()
+        st.line_chart(wide)
+                                
+def _checkbox_multi(label: str, options: List[str], default_n: int = 10, key_prefix: str = "pub_cb") -> List[str]:
+    """
+    チェックボックス群（可変数）を返す。初期は上位 default_n を ON。
+    """
+    if not options:
+        return []
+
+    st.caption(f"{label}（チェックで選択 / 初期は上位{default_n}件）")
+
+    # 「全選択/全解除」ボタン
+    col_btn1, col_btn2 = st.columns([1, 1])
+    with col_btn1:
+        select_all = st.button("✅ 全選択", key=f"{key_prefix}_all")
+    with col_btn2:
+        clear_all = st.button("🧹 全解除", key=f"{key_prefix}_clear")
+
+    # 4列グリッドで表示
+    ncols = 4
+    cols = st.columns(ncols)
+    selected = []
+    for i, opt in enumerate(options):
+        col = cols[i % ncols]
+        with col:
+            init_val = (i < default_n)
+            if select_all:
+                init_val = True
+            if clear_all:
+                init_val = False
+            checked = st.checkbox(opt, value=init_val, key=f"{key_prefix}_{i}_{opt}")
+            if checked:
+                selected.append(opt)
+    return selected
 
 
 # ========= メイン描画 =========
-def render_temporal_tab(df: pd.DataFrame, use_disk_cache: bool = True) -> None:
-    """
-    UIの流れ：
-      1) フィルタ（対象物 / 研究タイプ）
-      2) 期間と指標の設定（ウィンドウ幅・シフト幅・開始年・上位著者数）
-      3) 時系列スコアを算出 → 折れ線で推移を表示
-      4) 直近ウィンドウのランキングも併記（実務での確認用）
-    """
-    st.markdown("## ⏳ 研究ネットワークの経年変化（移動窓）")
+def render_temporal_tab(df: pd.DataFrame) -> None:
+    st.markdown("## ⏳ 発行年別の論文件数推移")
 
-    if df is None or "著者" not in df.columns:
-        st.info("著者データが見つかりません。")
+    if df is None or "発行年" not in df.columns:
+        st.info("発行年のデータが見つかりません。")
         return
 
-    # ---- 年範囲の自動推定（安全デフォルトへフォールバック） ----
-    ymin, ymax = _year_bounds(df)
+    ymin, ymax = _year_min_max(df)
 
-    # ---- 1) 対象物/研究タイプ で軽量フィルタ（部分一致）----
-    st.markdown("### 🔍 絞り込み条件（任意）")
-    c_f1, c_f2 = st.columns(2)
-    with c_f1:
-        tg_raw = {t for v in df.get("対象物_top3", pd.Series(dtype=str)).fillna("") for t in _split_multi(v)}
-        targets_sel = st.multiselect("対象物", sorted(tg_raw), default=[], key="temporal_tg")
-    with c_f2:
-        tp_raw = {t for v in df.get("研究タイプ_top3", pd.Series(dtype=str)).fillna("") for t in _split_multi(v)}
-        types_sel = st.multiselect("研究タイプ", sorted(tp_raw), default=[], key="temporal_tp")
-
-    df_filt = df.copy()
-    if targets_sel and "対象物_top3" in df_filt.columns:
-        df_filt = df_filt[_col_contains_any(df_filt["対象物_top3"], targets_sel)]
-    if types_sel and "研究タイプ_top3" in df_filt.columns:
-        df_filt = df_filt[_col_contains_any(df_filt["研究タイプ_top3"], types_sel)]
-
-    if df_filt.empty:
-        st.warning("条件に一致するデータがありません。フィルタを調整してください。")
-        return
-
-    # ---- 2) ウィンドウ設定 + 指標選択 ----
-    st.markdown("### ⚙️ 期間と指標の設定")
-    c1, c2, c3, c4, c5 = st.columns([1, 1, 1, 1, 1])
+    # ------ 共通フィルタ（年レンジ＋移動平均のみ） ------
+    c1, c2 = st.columns([1, 1])
     with c1:
-        metric = st.selectbox(
-            "中心性指標",
-            ["degree", "betweenness", "eigenvector"],
-            index=0,
-            key="temporal_metric",
-            help="networkx 未導入時は“共著数の合計”で代替します。",
-            format_func=lambda x: {"degree": "次数", "betweenness": "媒介", "eigenvector": "固有ベクトル"}[x],
+        y_from, y_to = st.slider(
+            "対象年（範囲）", min_value=ymin, max_value=ymax,
+            value=(ymin, ymax), key="pub_year_slider"
         )
     with c2:
-        win = st.number_input(
-            "ウィンドウ幅（年）",
-            min_value=2,
-            max_value=max(2, ymax - ymin + 1),
-            value=min(5, max(2, ymax - ymin + 1)),
-            step=1,
-            key="temporal_win",
-            help="1つの窓の年数。例：5年なら“2000–2004”で1区間。",
-        )
-    with c3:
-        step = st.number_input(
-            "シフト幅（年）",
-            min_value=1,
-            max_value=max(1, ymax - ymin + 1),
-            value=1,
-            step=1,
-            key="temporal_step",
-            help="窓をどれだけ右へ進めるか。1なら2000–2004 → 2001–2005 → …",
-        )
-    max_start = max(ymin, ymax - int(win) + 1)
-    with c4:
-        start_year = st.slider(
-            "開始年",
-            min_value=ymin,
-            max_value=max_start,
-            value=min(ymin, max_start),
-            step=1,
-            key="temporal_start",
-            help="最初の窓の左端。ここからシフト幅ずつ右へ評価します。",
-        )
-    with c5:
-        top_k = st.number_input(
-            "上位著者数",
-            min_value=3,
-            max_value=30,
-            value=10,
-            step=1,
-            key="temporal_topk",
-            help="可視化対象の著者数（ウィンドウ全体で重要度の高い順）。",
-        )
+        ma = st.number_input("移動平均（年）", min_value=1, max_value=7, value=1, step=1, key="pub_ma")
 
-    end_year = start_year + int(win) - 1
-    st.caption(f"📅 対象期間: **{start_year}–{end_year}**（{win}年・シフト {step}年）")
+    use_year = _apply_year(df, y_from, y_to)
 
-    # ---- 3) スコア計算（キャッシュ有り）----
-    with st.spinner("時系列スコアを計算中..."):
-        # ※ 移動窓の内部は _build_edges / _centrality_from_edges でキャッシュ済み
-        scores_long = _sliding_window_scores(
-            df=df_filt,
-            metric=metric,
-            start_year=start_year,
-            win=int(win),
-            step=int(step),
-            ymax=ymax,
-        )
+    tab1, tab2, tab3 = st.tabs([
+        "① 全体推移",
+        "② 対象物の推移",
+        "③ 研究タイプの推移",
+    ])
 
-    if scores_long.empty:
-        st.info("該当期間で共著ネットワークが構築できませんでした。年範囲やフィルタを調整してください。")
-        return
+    # ---- ① 全体推移 ----
+    with tab1:
+        st.markdown("### ① 全体推移")
+        s = _yearly_total_counts(use_year)
+        piv = s.to_frame(name="件数")
+        piv.index.name = "発行年"
+        if int(ma) > 1:
+            piv["件数"] = piv["件数"].rolling(window=int(ma), min_periods=1).mean()
+        _plot_lines_from_pivot(piv, x_label="発行年")
 
-    # 可視化対象の著者を上位に絞る（全期間の最大スコアでソート）
-    top_authors = (
-        scores_long.groupby("author")["score"]
-        .max()
-        .sort_values(ascending=False)
-        .head(int(top_k))
-        .index
-        .tolist()
-    )
-    plot_df = scores_long[scores_long["author"].isin(top_authors)].copy()
+    # ---- ② 対象物の推移（対象物＝チェックボックス、研究タイプ＝フィルタ）----
+    with tab2:
+        st.markdown("### ② 対象物の推移")
+        # 研究タイプのフィルタ（任意）
+        all_types = sorted({w for v in use_year.get("研究タイプ_top3", pd.Series(dtype=str)).fillna("") for w in split_multi(v)})
+        tp_filter = st.multiselect("研究タイプで絞り込み（任意）", all_types, default=[], key="pub_tgt_tp_filter")
+        df2 = use_year.copy()
+        if tp_filter:
+            if "研究タイプ_top3" in df2.columns:
+                df2 = df2[col_contains_any(df2["研究タイプ_top3"], tp_filter)]
 
-    # ---- 4) 折れ線可視化 ----
-    st.markdown("### 📈 中心性スコアの推移（移動窓）")
-    if HAS_PLOTLY:
-        fig = px.line(
-            plot_df, x="window", y="score", color="author", markers=True, template="plotly_white",
-            labels={"window": "ウィンドウ（年区間）", "score": "中心性スコア", "author": "著者"},
-        )
-        fig.update_layout(legend_title_text="著者", height=460, margin=dict(l=10, r=10, t=10, b=10))
-        st.plotly_chart(fig, use_container_width=True)
-    else:
-        pivot = plot_df.pivot(index="window", columns="author", values="score").fillna(0.0)
-        st.line_chart(pivot)
+        # 対象物の候補（多い場合は上位から）
+        all_targets = sorted({w for v in df2.get("対象物_top3", pd.Series(dtype=str)).fillna("") for w in split_multi(v)})
+        if not all_targets:
+            st.info("対象物のデータがありません。")
+        else:
+            sel_targets = _checkbox_multi("対象物を選択", all_targets, default_n=min(10, len(all_targets)), key_prefix="pub_tgt_cb")
+            if not sel_targets:
+                st.warning("対象物を1つ以上選んでください。とりあえず上位10件が初期選択です。")
 
-    with st.expander("📄 データを表示", expanded=False):
-        st.dataframe(plot_df.sort_values(["window", "score"], ascending=[True, False]), hide_index=True)
+            yearly = _yearly_counts_by(df2, "対象物_top3")
+            if yearly.empty:
+                st.info("集計データがありません。")
+            else:
+                if sel_targets:
+                    yearly = yearly[yearly["対象物_top3"].isin(sel_targets)]
+                piv = (yearly.pivot_table(index="発行年", columns="対象物_top3", values="count", aggfunc="sum")
+                              .fillna(0).sort_index())
+                if int(ma) > 1:
+                    piv = piv.rolling(window=int(ma), min_periods=1).mean()
+                _plot_lines_from_pivot(piv, x_label="発行年")
 
-    # ---- 5) 直近ウィンドウのランキング（現況確認）----
-    st.markdown("### 🔝 直近ウィンドウの上位")
-    last_from = max(end_year - int(win) + 1, start_year)
-    last_to = end_year
-    edges_last = _build_edges(df_filt, last_from, last_to)
-    # 直近は表を見やすく（共著数も併記）
-    # 共著数＝重み合計（networkx無でも計算可）
-    deg_last = (
-        pd.concat(
-            [edges_last.groupby("src")["weight"].sum(), edges_last.groupby("dst")["weight"].sum()],
-            axis=1,
-        )
-        .fillna(0)
-        .sum(axis=1)
-        .rename("coauth_count")
-        .reset_index()
-        .rename(columns={"index": "author"})
-    )
-    scores_last = _centrality_from_edges(edges_last, metric=metric).rename("score").reset_index().rename(columns={"index": "author"})
-    rank_last = pd.merge(scores_last, deg_last, on="author", how="left").fillna({"coauth_count": 0})
-    rank_last = rank_last.sort_values("score", ascending=False).head(30)
-    rank_last = rank_last.rename(columns={"author": "著者", "score": "中心性スコア", "coauth_count": "共著数"})
-    st.dataframe(rank_last, use_container_width=True, hide_index=True)
+    # ---- ③ 研究タイプの推移（研究タイプ＝チェックボックス、対象物＝フィルタ）----
+    with tab3:
+        st.markdown("### ③ 研究タイプの推移")
+        # 対象物のフィルタ（任意）
+        all_targets = sorted({w for v in use_year.get("対象物_top3", pd.Series(dtype=str)).fillna("") for w in split_multi(v)})
+        tg_filter = st.multiselect("対象物で絞り込み（任意）", all_targets, default=[], key="pub_typ_tg_filter")
+        df3 = use_year.copy()
+        if tg_filter:
+            if "対象物_top3" in df3.columns:
+                df3 = df3[col_contains_any(df3["対象物_top3"], tg_filter)]
 
-    st.caption("※ 指標の意味：次数=つながりの数 / 媒介=橋渡し度 / 固有ベクトル=影響力（影響力の高い相手との結び付き）")
+        # 研究タイプ候補
+        all_types = sorted({w for v in df3.get("研究タイプ_top3", pd.Series(dtype=str)).fillna("") for w in split_multi(v)})
+        if not all_types:
+            st.info("研究タイプのデータがありません。")
+        else:
+            sel_types = _checkbox_multi("研究タイプを選択", all_types, default_n=min(10, len(all_types)), key_prefix="pub_typ_cb")
+            if not sel_types:
+                st.warning("研究タイプを1つ以上選んでください。とりあえず上位10件が初期選択です。")
+
+            yearly = _yearly_counts_by(df3, "研究タイプ_top3")
+            if yearly.empty:
+                st.info("集計データがありません。")
+            else:
+                if sel_types:
+                    yearly = yearly[yearly["研究タイプ_top3"].isin(sel_types)]
+                piv = (yearly.pivot_table(index="発行年", columns="研究タイプ_top3", values="count", aggfunc="sum")
+                              .fillna(0).sort_index())
+                if int(ma) > 1:
+                    piv = piv.rolling(window=int(ma), min_periods=1).mean()
+                _plot_lines_from_pivot(piv, x_label="発行年")
