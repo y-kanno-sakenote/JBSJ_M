@@ -313,6 +313,7 @@ def safe_show_image(obj: Any) -> None:
     UI（描画結果）は変更しない。
     """
     import numpy as np
+    import io
     try:
         from PIL import Image
     except Exception:
@@ -332,14 +333,22 @@ def safe_show_image(obj: Any) -> None:
     except Exception:
         pass
 
-    # PIL.Image
+    # PIL.Image は必ず PNG バイト列へ変換してから表示（環境差対策）
     if Image is not None and isinstance(obj, Image.Image):
-        st.image(obj, use_container_width=True)
+        try:
+            img = obj
+            # 透過やパレット等のモードを統一
+            if img.mode not in ("RGB", "RGBA"):
+                # パレットやF/LAなどはRGBA化が安全
+                img = img.convert("RGBA")
+            buf = io.BytesIO()
+            img.save(buf, format="PNG")  # フォーマットはPNG固定で安定
+            st.image(buf.getvalue(), use_container_width=True)
+        except Exception as e:
+            st.warning(f"PIL画像の表示で例外が発生しました: {e!s}")
         return
 
     # NumPy array
-    if 'np' not in locals():
-        import numpy as np  # fallback
     if isinstance(obj, np.ndarray):
         arr = obj
         # 形状チェック
@@ -377,7 +386,7 @@ def safe_show_image(obj: Any) -> None:
 
     # それ以外
     st.warning(f"st.imageが扱えない型でした: {type(obj)}")
-
+    
 # ========= ① 頻出キーワード =========
 def _render_freq_block(df: pd.DataFrame) -> None:
     st.markdown("### ① 頻出キーワード")
