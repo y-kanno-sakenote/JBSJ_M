@@ -243,6 +243,11 @@ def _render_cross_block(df: pd.DataFrame) -> None:
     piv.index.name = "研究タイプ"
     piv.columns.name = "対象物"
 
+    # ★ 並び順を固定（指定順 → 未定義カテゴリは後尾で五十音/アルファベット順）
+    cols_order = [x for x in TARGET_ORDER if x in piv.columns] + sorted([x for x in piv.columns if x not in TARGET_ORDER])
+    idx_order  = [x for x in TYPE_ORDER   if x in piv.index  ] + sorted([x for x in piv.index  if x not in TYPE_ORDER])
+    piv = piv.reindex(index=idx_order, columns=cols_order)
+
     if HAS_PX:
         fig = px.imshow(
             piv,
@@ -250,11 +255,14 @@ def _render_cross_block(df: pd.DataFrame) -> None:
             color_continuous_scale="Blues",
             labels=dict(color="件数"),
         )
+        # 念のため軸カテゴリ順も明示（px.imshow は DataFrame順だが保険）
+        fig.update_xaxes(categoryorder="array", categoryarray=cols_order)
+        fig.update_yaxes(categoryorder="array", categoryarray=idx_order)
+
         fig.update_layout(height=560, margin=dict(l=10, r=10, t=30, b=10))
         st.plotly_chart(fig, use_container_width=True)
     else:
         st.dataframe(piv, use_container_width=True)
-
 
 # ========= ② 経年トレンド =========
 @st.cache_data(ttl=600, show_spinner=False)
@@ -329,21 +337,27 @@ def _render_trend_block(df: pd.DataFrame) -> None:
         piv = piv.rolling(window=int(ma), min_periods=1).mean()
 
     # ★ 一意キー：年範囲・モード・選択・MAでユニーク化
+    # ★ 一意キー：年範囲・モード・選択・MAでユニーク化
     _sel_key = ",".join(sel) if sel else "__ALL__"
     _uniq_key = f"obj_trend_plot|{y_from}-{y_to}|{target_mode}|{_sel_key}|ma{ma}"
+
+    # ★ 凡例順を固定（対象物 or 研究タイプ で切替）
+    if target_mode == "対象物_top3":
+        legend_order = [x for x in TARGET_ORDER if x in piv.columns]
+    else:
+        legend_order = [x for x in TYPE_ORDER if x in piv.columns]
 
     if HAS_PX:
         fig = px.line(
             piv.reset_index().melt(id_vars="発行年", var_name="項目", value_name="件数"),
-            x="発行年", y="件数", color="項目", markers=True
+            x="発行年", y="件数", color="項目", markers=True,
+            category_orders={"項目": legend_order}  # ← 順序のみ固定
         )
-        fig.update_layout(height=520, margin=dict(l=10,r=10,t=30,b=10))
-        # ★ key を付けて重複ID回避（旧版でも key は利用可能）
+        # 位置はいじらずデフォルトに戻す。高さ・マージンだけ維持。
+        fig.update_layout(height=520, margin=dict(l=10, r=10, t=30, b=10))
         st.plotly_chart(fig, use_container_width=True, key=_uniq_key)
     else:
-        # st.line_chart も key を付けておくと安心
         st.line_chart(piv, key=_uniq_key)
-
 
 # ========= ③ 共起ネットワーク =========
 def _build_cooccur_edges(df: pd.DataFrame,
