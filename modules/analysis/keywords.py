@@ -24,11 +24,29 @@
 
 from __future__ import annotations
 import re
-from typing import List, Tuple, Dict
+from typing import List, Tuple, Dict, Any
 
 import pandas as pd
 import streamlit as st
 from pathlib import Path
+
+# 並び順（表示順）を固定するための定数
+TARGET_ORDER = [
+    "清酒","ビール","ワイン","焼酎","アルコール飲料","発酵乳・乳製品",
+    "醤油","味噌","発酵食品","農産物・果実","副産物・バイオマス","酵母・微生物","アミノ酸・タンパク質","その他"
+]
+TYPE_ORDER = [
+    "微生物・遺伝子関連","醸造工程・製造技術","応用利用・食品開発","成分分析・物性評価",
+    "品質評価・官能評価","歴史・文化・経済","健康機能・栄養効果","統計解析・モデル化",
+    "環境・サステナビリティ","保存・安定性","その他（研究タイプ）"
+]
+
+def _order_options(all_options: list[str], preferred: list[str]) -> list[str]:
+    """preferred に含まれるものはその順で先頭に、それ以外は五十音（アルファベット）順で後ろに並べる"""
+    s = set(all_options)
+    head = [x for x in preferred if x in s]
+    tail = sorted([x for x in all_options if x not in preferred])
+    return head + tail
 
 # --- 追加: ストップワードとノイズ判定 ---
 try:
@@ -288,6 +306,77 @@ def _draw_pyvis_from_edges(edges: pd.DataFrame, height_px: int = 650) -> None:
     html = net.generate_html(notebook=False)  # ← ブラウザ自動オープン回避
     st.components.v1.html(html, height=height_px, scrolling=True)
 
+# ==== 追加：安全表示ヘルパー（UIは変えずに落ちにくく） ====
+def safe_show_image(obj: Any) -> None:
+    """
+    Streamlitの画像表示で型差異があっても落ちないように安全に表示する。
+    UI（描画結果）は変更しない。
+    """
+    import numpy as np
+    try:
+        from PIL import Image
+    except Exception:
+        Image = None  # type: ignore
+
+    # None
+    if obj is None:
+        st.warning("画像データが None でした。生成に失敗している可能性があります。")
+        return
+
+    # Matplotlib Figure -> pyplot
+    try:
+        import matplotlib.figure
+        if isinstance(obj, matplotlib.figure.Figure):
+            st.pyplot(obj)
+            return
+    except Exception:
+        pass
+
+    # PIL.Image
+    if Image is not None and isinstance(obj, Image.Image):
+        st.image(obj, use_container_width=True)
+        return
+
+    # NumPy array
+    if 'np' not in locals():
+        import numpy as np  # fallback
+    if isinstance(obj, np.ndarray):
+        arr = obj
+        # 形状チェック
+        if arr.ndim == 2:
+            pass  # gray OK
+        elif arr.ndim == 3 and arr.shape[2] in (3, 4):
+            pass
+        else:
+            st.warning(f"想定外の配列shapeです: {arr.shape}")
+            return
+        # dtypeをuint8へ
+        if arr.dtype in (np.float32, np.float64):
+            a = arr
+            if np.nanmax(a) <= 1.0:
+                a = (np.nan_to_num(a) * 255.0).clip(0, 255).astype(np.uint8)
+            else:
+                a = np.nan_to_num(a).clip(0, 255).astype(np.uint8)
+            st.image(a, use_container_width=True)
+        elif arr.dtype == np.uint8:
+            st.image(arr, use_container_width=True)
+        else:
+            a = np.nan_to_num(arr).clip(0, 255).astype(np.uint8)
+            st.image(a, use_container_width=True)
+        return
+
+    # bytes / bytearray
+    if isinstance(obj, (bytes, bytearray)):
+        st.image(obj, use_container_width=True)
+        return
+
+    # 文字列（URL or パス）
+    if isinstance(obj, str):
+        st.image(obj, use_container_width=True)
+        return
+
+    # それ以外
+    st.warning(f"st.imageが扱えない型でした: {type(obj)}")
 
 # ========= ① 頻出キーワード =========
 def _render_freq_block(df: pd.DataFrame) -> None:
@@ -300,8 +389,14 @@ def _render_freq_block(df: pd.DataFrame) -> None:
                                  value=(ymin, ymax), key="kw_freq_year")
 
     # ▼ 候補リストを自動抽出
-    targets_all = sorted({w for v in df.get("対象物_top3", pd.Series(dtype=str)).fillna("") for w in _SPLIT_MULTI_RE.split(v) if w.strip()})
-    types_all   = sorted({w for v in df.get("研究タイプ_top3", pd.Series(dtype=str)).fillna("") for w in _SPLIT_MULTI_RE.split(v) if w.strip()})
+    targets_all = sorted({w for v in df.get("対象物_top3", pd.Series(dtype=str)).fillna("")
+                          for w in _SPLIT_MULTI_RE.split(v) if w.strip()})
+    types_all   = sorted({w for v in df.get("研究タイプ_top3", pd.Series(dtype=str)).fillna("")
+                          for w in _SPLIT_MULTI_RE.split(v) if w.strip()})
+
+    # ★ 表示順を固定
+    targets_all = _order_options(targets_all, TARGET_ORDER)
+    types_all   = _order_options(types_all, TYPE_ORDER)
 
     with c2:
         tg_needles = st.multiselect("対象物で絞り込み", options=targets_all, default=[], key="kw_freq_tg")
@@ -338,10 +433,10 @@ def _render_freq_block(df: pd.DataFrame) -> None:
                                collocations=False, prefer_horizontal=1.0,
                                font_path=font_path or None)
                 img = wc.generate_from_frequencies(textfreq).to_image()
-                st.image(img, use_container_width=True)
+                # --- ここだけ差し替え（UI変更なし） ---
+                safe_show_image(img)
         else:
             st.caption("※ wordcloud が未導入のため非表示です。")
-
 
 # ========= ② 共起ネットワーク（遅延描画） =========
 def _render_cooccur_block(df: pd.DataFrame) -> None:
@@ -360,8 +455,14 @@ def _render_cooccur_block(df: pd.DataFrame) -> None:
         st.caption("下のボタンで描画します。")
 
     # ▼ 候補リストを自動抽出
-    targets_all = sorted({w for v in df.get("対象物_top3", pd.Series(dtype=str)).fillna("") for w in _SPLIT_MULTI_RE.split(v) if w.strip()})
-    types_all   = sorted({w for v in df.get("研究タイプ_top3", pd.Series(dtype=str)).fillna("") for w in _SPLIT_MULTI_RE.split(v) if w.strip()})
+    targets_all = sorted({w for v in df.get("対象物_top3", pd.Series(dtype=str)).fillna("")
+                          for w in _SPLIT_MULTI_RE.split(v) if w.strip()})
+    types_all   = sorted({w for v in df.get("研究タイプ_top3", pd.Series(dtype=str)).fillna("")
+                          for w in _SPLIT_MULTI_RE.split(v) if w.strip()})
+
+    # ★ 表示順を固定
+    targets_all = _order_options(targets_all, TARGET_ORDER)
+    types_all   = _order_options(types_all, TYPE_ORDER)
 
     c5, c6 = st.columns([1,1])
     with c5:
@@ -430,7 +531,6 @@ def _render_trend_block(df: pd.DataFrame) -> None:
         st.plotly_chart(fig, use_container_width=True)
     else:
         st.line_chart(piv)
-
 
 # ========= エクスポート：タブ本体 =========
 def render_keyword_tab(df: pd.DataFrame) -> None:
