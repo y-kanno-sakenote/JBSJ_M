@@ -108,17 +108,25 @@ def _yearly_counts_by(df: pd.DataFrame, col: str) -> pd.DataFrame:
     c = pd.DataFrame(rows, columns=["発行年", col]).value_counts().reset_index(name="count")
     return c.sort_values(["発行年", "count"], ascending=[True, False]).reset_index(drop=True)
 
-def _plot_lines_from_pivot(piv: pd.DataFrame, x_label: str = "発行年"):
+def _plot_lines_from_pivot(piv: pd.DataFrame, x_label: str = "発行年", legend_order: list[str] | None = None):
     """ピボット(index=年, columns=項目, values=件数)を安全に折れ線描画。
        - x列を必ず用意
        - データ列が1つも無い場合は早期リターン
        - stack→reset_index 後は “列の位置” で [発行年, 項目, 件数] に確実リネーム
+       - legend_order が渡されたら、列順・凡例順を固定
     """
     if piv is None or piv.empty:
         st.info("該当データがありません。条件を見直してください。")
         return
 
     df_plot = piv.copy()
+
+    # ★ 先に列順を固定：存在するものだけを order 順に、余りは末尾へ
+    if legend_order:
+        head = [c for c in legend_order if c in df_plot.columns]
+        tail = [c for c in df_plot.columns if c not in head]
+        if head:
+            df_plot = df_plot[head + tail]
 
     # x列（発行年）を必ず作る
     if x_label not in df_plot.columns:
@@ -147,12 +155,7 @@ def _plot_lines_from_pivot(piv: pd.DataFrame, x_label: str = "発行年"):
     if len(cols) < 3:
         st.info("描画用のデータ整形に失敗しました（列の欠落）。条件を見直してください。")
         return
-    # 位置で確実にリネーム
-    df_long = df_long.rename(columns={
-        cols[0]: x_label,   # 年
-        cols[1]: "項目",     # カテゴリ
-        cols[2]: "件数",     # 値
-    })
+    df_long = df_long.rename(columns={cols[0]: x_label, cols[1]: "項目", cols[2]: "件数"})
 
     # 型整形
     df_long[x_label] = pd.to_numeric(df_long[x_label], errors="coerce")
@@ -170,13 +173,25 @@ def _plot_lines_from_pivot(piv: pd.DataFrame, x_label: str = "発行年"):
 
     # 可視化
     if HAS_PX:
-        fig = px.line(df_long, x=x_label, y="件数", color="項目", markers=True)
+        if legend_order:
+            category_orders = {"項目": [c for c in legend_order if c in df_long["項目"].unique()]}
+        else:
+            category_orders = None
+        fig = px.line(
+            df_long, x=x_label, y="件数", color="項目", markers=True,
+            category_orders=category_orders
+        )
         fig.update_layout(height=520, margin=dict(l=10, r=10, t=30, b=10), legend_title_text="項目")
         st.plotly_chart(fig, use_container_width=True)
     else:
         wide = df_long.pivot_table(index=x_label, columns="項目", values="件数", aggfunc="mean").sort_index()
+        # ★ st.line_chart でも列順を固定
+        if legend_order:
+            head = [c for c in legend_order if c in wide.columns]
+            tail = [c for c in wide.columns if c not in head]
+            wide = wide[head + tail]
         st.line_chart(wide)
-        
+
 def _checkbox_multi(label: str, options: List[str], default_n: int = 10, key_prefix: str = "pub_cb") -> List[str]:
     if not options:
         return []
@@ -255,7 +270,9 @@ def render_temporal_tab(df: pd.DataFrame) -> None:
                 piv = yearly.pivot_table(index="発行年", columns="対象物_top3", values="count", aggfunc="sum").fillna(0).sort_index()
                 if int(ma) > 1:
                     piv = piv.rolling(window=int(ma), min_periods=1).mean()
-                _plot_lines_from_pivot(piv, x_label="発行年")
+                # ★ 対象物の順で凡例固定
+                legend_order = [x for x in TARGET_ORDER if x in piv.columns] + [c for c in piv.columns if c not in TARGET_ORDER]
+                _plot_lines_from_pivot(piv, x_label="発行年", legend_order=legend_order)
 
     # ---- 研究タイプ ----
     with tab3:
@@ -280,4 +297,6 @@ def render_temporal_tab(df: pd.DataFrame) -> None:
                 piv = yearly.pivot_table(index="発行年", columns="研究タイプ_top3", values="count", aggfunc="sum").fillna(0).sort_index()
                 if int(ma) > 1:
                     piv = piv.rolling(window=int(ma), min_periods=1).mean()
-                _plot_lines_from_pivot(piv, x_label="発行年")
+                # ★ 研究タイプの順で凡例固定
+                legend_order = [x for x in TYPE_ORDER if x in piv.columns] + [c for c in piv.columns if c not in TYPE_ORDER]
+                _plot_lines_from_pivot(piv, x_label="発行年", legend_order=legend_order)
