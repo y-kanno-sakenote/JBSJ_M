@@ -528,21 +528,31 @@ def _render_trend_block(df: pd.DataFrame) -> None:
     latest_top = (yearly[yearly["発行年"] == latest_year]
                   .sort_values("count", ascending=False)["keyword"]
                   .head(int(topn)).tolist())
+
     piv = (yearly[yearly["keyword"].isin(latest_top)]
            .pivot_table(index="発行年", columns="keyword", values="count", aggfunc="sum")
            .fillna(0).sort_index())
+
+    # ★ 凡例順＝最新年度の多い順で列を並べ替え（st.line_chart でも順序が反映される）
+    legend_order = [k for k in latest_top if k in piv.columns]
+    others = [k for k in piv.columns if k not in legend_order]
+    piv = piv[legend_order + sorted(others)]  # 未使用の列が紛れても後尾に整列
 
     if int(ma) > 1:
         piv = piv.rolling(window=int(ma), min_periods=1).mean()
 
     if HAS_PX:
-        fig = px.line(piv.reset_index().melt(id_vars="発行年", var_name="キーワード", value_name="件数"),
-                      x="発行年", y="件数", color="キーワード", markers=True)
+        fig = px.line(
+            piv.reset_index().melt(id_vars="発行年", var_name="キーワード", value_name="件数"),
+            x="発行年", y="件数", color="キーワード", markers=True,
+            # ★ Plotly 側でもレジェンド順を固定
+            category_orders={"キーワード": legend_order + sorted(others)}
+        )
         fig.update_layout(height=520, margin=dict(l=10,r=10,t=30,b=10))
         st.plotly_chart(fig, use_container_width=True)
     else:
         st.line_chart(piv)
-
+        
 # ========= エクスポート：タブ本体 =========
 def render_keyword_tab(df: pd.DataFrame) -> None:
     st.markdown("## 🧠 キーワード分析")
