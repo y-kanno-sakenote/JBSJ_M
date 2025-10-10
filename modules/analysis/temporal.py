@@ -256,9 +256,9 @@ def render_temporal_tab(df: pd.DataFrame) -> None:
         if not all_targets:
             st.info("対象物のデータがありません。")
         else:
-            sel_targets = _checkbox_multi("対象物を選択", all_targets, default_n=min(10, len(all_targets)), key_prefix="pub_tgt_cb")
+            sel_targets = _checkbox_multi("対象物を選択", all_targets, default_n=min(14, len(all_targets)), key_prefix="pub_tgt_cb")
             if not sel_targets:
-                st.warning("対象物を1つ以上選んでください。とりあえず上位10件が初期選択です。")
+                st.warning("対象物を1つ以上選んでください。とりあえず上位14件が初期選択です。")
 
             yearly = _yearly_counts_by(df2, "対象物_top3")
             if yearly.empty:
@@ -288,9 +288,9 @@ def render_temporal_tab(df: pd.DataFrame) -> None:
         if not all_types:
             st.info("研究タイプのデータがありません。")
         else:
-            sel_types = _checkbox_multi("研究タイプを選択", all_types, default_n=min(10, len(all_types)), key_prefix="pub_typ_cb")
+            sel_types = _checkbox_multi("研究タイプを選択", all_types, default_n=min(11, len(all_types)), key_prefix="pub_typ_cb")
             if not sel_types:
-                st.warning("研究タイプを1つ以上選んでください。とりあえず上位10件が初期選択です。")
+                st.warning("研究タイプを1つ以上選んでください。とりあえず上位11件が初期選択です。")
 
             yearly = _yearly_counts_by(df3, "研究タイプ_top3")
             if yearly.empty:
