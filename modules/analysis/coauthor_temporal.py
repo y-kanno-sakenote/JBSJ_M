@@ -5,6 +5,7 @@
 - 年レンジ・対象物・研究タイプでフィルタ
 - ウインドウ幅とステップで期間をスライド → 中心性（次数/媒介/固有ベクトル）を算出
 - 上位研究者のスコア推移を折れ線で可視化（Plotly が無ければ st.line_chart にフォールバック）
+※ 機能・UIは既存のまま。対象物/研究タイプの選択肢の並び順のみ指定順に整列。
 """
 
 from __future__ import annotations
@@ -14,6 +15,24 @@ from typing import List, Tuple
 
 import pandas as pd
 import streamlit as st
+
+# ---- 並び順（指定順） ----
+TARGET_ORDER = [
+    "清酒","ビール","ワイン","焼酎","アルコール飲料","発酵乳・乳製品",
+    "醤油","味噌","発酵食品","農産物・果実","副産物・バイオマス",
+    "酵母・微生物","アミノ酸・タンパク質","その他"
+]
+TYPE_ORDER = [
+    "微生物・遺伝子関連","醸造工程・製造技術","応用利用・食品開発","成分分析・物性評価",
+    "品質評価・官能評価","歴史・文化・経済","健康機能・栄養効果","統計解析・モデル化",
+    "環境・サステナビリティ","保存・安定性","その他（研究タイプ）"
+]
+
+def _sort_with_order(items, order):
+    """指定順で整列（未定義は末尾・名前順）"""
+    order_map = {n: i for i, n in enumerate(order)}
+    return sorted(items, key=lambda x: (order_map.get(x, len(order)), x))
+
 
 # ---- Optional deps ----
 try:
@@ -29,7 +48,7 @@ except Exception:
     HAS_PX = False
 
 
-# ========= 共有ユーティリティ（本モジュール内で自給自足） =========
+# ========= 共有ユーティリティ =========
 _AUTHOR_SPLIT_RE = re.compile(r"[;；,、，/／|｜]+")
 _MULTI_SPLIT_RE  = re.compile(r"[;；,、，/／|｜\s　]+")
 
@@ -247,16 +266,16 @@ def render_coauthor_temporal_subtab(df: pd.DataFrame, use_disk_cache: bool = Fal
             help="networkx が未導入の場合は簡易スコア（共著数の合計）で代替します。",
         )
 
-    # 2段目: 対象物・研究タイプフィルタ
+    # 2段目: 対象物・研究タイプフィルタ（※ 並び順だけ指定順に変更。UI/文言/キーは既存のまま）
     c5, c6 = st.columns([1, 1])
     with c5:
-        # 候補抽出（アルファ順）
         tg_raw = {t for v in df.get("対象物_top3", pd.Series(dtype=str)).fillna("") for t in split_multi(v)}
-        tg_all = sorted(tg_raw)
+        # ここだけ整列（指定順）—— 機能・UIは不変
+        tg_all = _sort_with_order(list(tg_raw), TARGET_ORDER)
         tg_sel = st.multiselect("対象物で絞り込み（部分一致）", tg_all, default=[], key="co_temporal_tg")
     with c6:
         tp_raw = {t for v in df.get("研究タイプ_top3", pd.Series(dtype=str)).fillna("") for t in split_multi(v)}
-        tp_all = sorted(tp_raw)
+        tp_all = _sort_with_order(list(tp_raw), TYPE_ORDER)
         tp_sel = st.multiselect("研究タイプで絞り込み（部分一致）", tp_all, default=[], key="co_temporal_tp")
 
     # 実行

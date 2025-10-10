@@ -46,6 +46,25 @@ except Exception:
     HAS_DISK_CACHE = False
 
 
+# ========= 並び順（temporal.py と統一） & 補助ソート関数 =========
+TARGET_ORDER = [
+    "清酒","ビール","ワイン","焼酎","アルコール飲料","発酵乳・乳製品",
+    "醤油","味噌","発酵食品","農産物・果実","副産物・バイオマス",
+    "酵母・微生物","アミノ酸・タンパク質","その他"
+]
+
+TYPE_ORDER = [
+    "微生物・遺伝子関連","醸造工程・製造技術","応用利用・食品開発","成分分析・物性評価",
+    "品質評価・官能評価","歴史・文化・経済","健康機能・栄養効果","統計解析・モデル化",
+    "環境・サステナビリティ","保存・安定性","その他（研究タイプ）"
+]
+
+def _sort_with_order(items: List[str], order: List[str]) -> List[str]:
+    order_map = {name: i for i, name in enumerate(order)}
+    # 未定義項目は末尾・元の名前順
+    return sorted(items, key=lambda x: (order_map.get(x, len(order)), x))
+
+
 # ========= 基本ユーティリティ =========
 _AUTHOR_SPLIT_RE = re.compile(r"[;；,、，/／|｜]+")
 _SPLIT_MULTI_RE  = re.compile(r"[;；,、，/／|｜\s　]+")
@@ -276,6 +295,10 @@ def render_coauthor_tab(df: pd.DataFrame, use_disk_cache: bool = False):
         # フィルタ（選択式）
         targets_all = sorted({w for v in df.get("対象物_top3", pd.Series(dtype=str)).fillna("") for w in split_multi(v)})
         types_all   = sorted({w for v in df.get("研究タイプ_top3", pd.Series(dtype=str)).fillna("") for w in split_multi(v)})
+
+        # ★ 並び順を ORDER に合わせる（機能変更なし・順序のみ統一）
+        targets_all = _sort_with_order(list(targets_all), TARGET_ORDER)
+        types_all   = _sort_with_order(list(types_all), TYPE_ORDER)
 
         c1, c2, c3= st.columns([1, 1, 1])
         with c1:
