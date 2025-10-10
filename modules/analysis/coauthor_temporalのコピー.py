@@ -16,11 +16,6 @@ from typing import List, Tuple
 import pandas as pd
 import streamlit as st
 
-# 小規模ネットワーク抑制用の閾値
-_MIN_NODES_FOR_CENTRALITY = 0        # スキップしない（減衰のみ）
-_SOFT_NORM_TARGET_N = 12             # これ未満のときはスコアを減衰
-_SOFT_NORM_GAMMA = 1.5               # 減衰の強さ（1.0=線形, >1.0で強め）
-
 # ---- 並び順（指定順） ----
 TARGET_ORDER = [
     "清酒","ビール","ワイン","焼酎","アルコール飲料","発酵乳・乳製品",
@@ -142,7 +137,7 @@ def centrality_from_edges(edges: pd.DataFrame, metric: str = "degree") -> pd.Dat
     if edges.empty:
         return pd.DataFrame(columns=["author", "score", "coauth_count"])
 
-    # 簡易共著数（重み合計）は常に計算
+    # 簡易共著数（重み和）だけは常に計算
     deg_simple = pd.concat([
         edges.groupby("src")["weight"].sum(),
         edges.groupby("dst")["weight"].sum(),
@@ -154,45 +149,26 @@ def centrality_from_edges(edges: pd.DataFrame, metric: str = "degree") -> pd.Dat
         out = deg_simple.rename(columns={"coauth_count": "score"})
         return out[["author", "score", "coauth_count"]].sort_values("score", ascending=False).reset_index(drop=True)
 
-    # networkx グラフ構築
+    # networkx による中心性
     G = nx.Graph()
     for _, r in edges.iterrows():
         G.add_edge(r["src"], r["dst"], weight=float(r["weight"]))
 
-    # ★ 最大連結成分のみを使用（分断の影響を軽減）
-    if G.number_of_nodes() == 0:
-        return pd.DataFrame(columns=["author", "score", "coauth_count"])
-    if nx.number_connected_components(G) > 1:
-        largest = max(nx.connected_components(G), key=len)
-        G = G.subgraph(largest).copy()
-
-    n = G.number_of_nodes()
-    # ★ スキップはしない（小規模年は後段で減衰）
-
-    # 中心性（正規化）
     if metric == "betweenness":
         cen = nx.betweenness_centrality(G, weight="weight", normalized=True)
     elif metric == "eigenvector":
-        # 固有ベクトル中心性（収束しない場合は次数にフォールバック）
         try:
-            cen = nx.eigenvector_centrality(G, weight="weight", max_iter=200, tol=1e-06)
+            cen = nx.eigenvector_centrality_numpy(G, weight="weight")
         except Exception:
             cen = nx.degree_centrality(G)
     else:
         cen = nx.degree_centrality(G)
 
-    # DataFrame化
     cen_df = pd.Series(cen, name="score").reset_index().rename(columns={"index": "author"})
     out = pd.merge(cen_df, deg_simple, on="author", how="left")
     out["coauth_count"] = out["coauth_count"].fillna(0).astype(float)
-
-    # ★ 小規模年はスコアを強めに減衰（UI変更なし・除外なし）
-    #    factor = min(1, (n / _SOFT_NORM_TARGET_N) ** _SOFT_NORM_GAMMA)
-    if n > 0:
-        factor = min(1.0, (float(n) / float(_SOFT_NORM_TARGET_N)) ** float(_SOFT_NORM_GAMMA))
-        out["score"] = out["score"] * factor
-
     return out[["author", "score", "coauth_count"]].sort_values("score", ascending=False).reset_index(drop=True)
+
 
 # ========= ウインドウスライス（時系列） =========
 def _window_ranges(ymin: int, ymax: int, width: int, step: int) -> List[Tuple[int, int, int]]:
