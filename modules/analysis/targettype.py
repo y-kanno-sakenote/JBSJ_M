@@ -16,6 +16,24 @@ from typing import List, Tuple, Dict, Set
 import pandas as pd
 import streamlit as st
 
+# 表示順（固定）
+TARGET_ORDER = [
+    "清酒","ビール","ワイン","焼酎","アルコール飲料","発酵乳・乳製品",
+    "醤油","味噌","発酵食品","農産物・果実","副産物・バイオマス","酵母・微生物","アミノ酸・タンパク質","その他"
+]
+TYPE_ORDER = [
+    "微生物・遺伝子関連","醸造工程・製造技術","応用利用・食品開発","成分分析・物性評価",
+    "品質評価・官能評価","歴史・文化・経済","健康機能・栄養効果","統計解析・モデル化",
+    "環境・サステナビリティ","保存・安定性","その他（研究タイプ）"
+]
+
+def _order_options(all_options: list[str], preferred: list[str]) -> list[str]:
+    """preferredにあるものはその順で先頭、それ以外は五十音/アルファベット順で後ろへ"""
+    s = set(all_options)
+    head = [x for x in preferred if x in s]
+    tail = sorted([x for x in all_options if x not in preferred])
+    return head + tail
+
 # --- Optional deps (なくても動く) ---
 try:
     import plotly.express as px  # type: ignore
@@ -270,9 +288,28 @@ def _render_trend_block(df: pd.DataFrame) -> None:
         ma = st.number_input("移動平均（年）", min_value=1, max_value=7, value=1, step=1, key="obj_trend_ma")
 
     # 候補と選択
+    # 候補と選択
     use = _apply_filters(df, y_from, y_to, [], [])
-    all_items = sorted({t for v in use.get(target_mode, pd.Series(dtype=str)).fillna("") for t in split_multi(v)})
-    sel = st.multiselect("表示する項目（複数可）", all_items[:1000], default=all_items[: min(5, len(all_items))], key="obj_trend_items")
+
+    # 生の候補を抽出
+    all_items_raw = sorted({
+        t for v in use.get(target_mode, pd.Series(dtype=str)).fillna("")
+        for t in split_multi(v)
+    })
+
+    # ★ 表示順を固定（対象物/研究タイプで順序を切替）
+    if target_mode == "対象物_top3":
+        all_items = _order_options(all_items_raw, TARGET_ORDER)
+    else:  # "研究タイプ_top3"
+        all_items = _order_options(all_items_raw, TYPE_ORDER)
+
+    # multiselect（表示順そのまま、デフォルト選択も同順で上位から）
+    sel = st.multiselect(
+        "表示する項目（複数可）",
+        all_items[:1000],
+        default=all_items[: min(0, len(all_items))],
+        key="obj_trend_items",
+    )
 
     yearly = _yearly_counts(use, target_mode)
     if yearly.empty:
@@ -283,16 +320,29 @@ def _render_trend_block(df: pd.DataFrame) -> None:
     if sel:
         piv = piv[[c for c in sel if c in piv.columns]]
 
+    # ★ 空列（全解除や不一致）なら描画せずに案内して終了
+    if piv.shape[1] == 0:
+        st.info("表示対象がありません。左のリストから1つ以上選んでください。")
+        return
+
     if ma > 1:
         piv = piv.rolling(window=int(ma), min_periods=1).mean()
 
+    # ★ 一意キー：年範囲・モード・選択・MAでユニーク化
+    _sel_key = ",".join(sel) if sel else "__ALL__"
+    _uniq_key = f"obj_trend_plot|{y_from}-{y_to}|{target_mode}|{_sel_key}|ma{ma}"
+
     if HAS_PX:
-        fig = px.line(piv.reset_index().melt(id_vars="発行年", var_name="項目", value_name="件数"),
-                      x="発行年", y="件数", color="項目", markers=True)
+        fig = px.line(
+            piv.reset_index().melt(id_vars="発行年", var_name="項目", value_name="件数"),
+            x="発行年", y="件数", color="項目", markers=True
+        )
         fig.update_layout(height=520, margin=dict(l=10,r=10,t=30,b=10))
-        st.plotly_chart(fig, use_container_width=True)
+        # ★ key を付けて重複ID回避（旧版でも key は利用可能）
+        st.plotly_chart(fig, use_container_width=True, key=_uniq_key)
     else:
-        st.line_chart(piv)
+        # st.line_chart も key を付けておくと安心
+        st.line_chart(piv, key=_uniq_key)
 
 
 # ========= ③ 共起ネットワーク =========
@@ -369,6 +419,10 @@ def _render_cooccurrence_block(df: pd.DataFrame) -> None:
                     for t in split_multi(v)})
     tp_all = sorted({t for v in use_year.get("研究タイプ_top3", pd.Series(dtype=str)).fillna("")
                     for t in split_multi(v)})
+
+    # ★ 表示順を固定
+    tg_all = _order_options(tg_all, TARGET_ORDER)
+    tp_all = _order_options(tp_all, TYPE_ORDER)
 
     c5, c6 = st.columns([1, 1])
     with c5:
