@@ -30,6 +30,17 @@ import pandas as pd
 import streamlit as st
 from pathlib import Path
 
+def _image_compat(data):
+    try:
+        # 新しめの Streamlit
+        st.image(data, use_container_width=True)
+    except TypeError as e:
+        # 旧版：use_container_width を知らない
+        if "use_container_width" in str(e):
+            st.image(data, use_column_width=True)
+        else:
+            raise
+
 # 並び順（表示順）を固定するための定数
 TARGET_ORDER = [
     "清酒","ビール","ワイン","焼酎","アルコール飲料","発酵乳・乳製品",
@@ -308,10 +319,6 @@ def _draw_pyvis_from_edges(edges: pd.DataFrame, height_px: int = 650) -> None:
 
 # ==== 追加：安全表示ヘルパー（UIは変えずに落ちにくく） ====
 def safe_show_image(obj: Any) -> None:
-    """
-    Streamlitの画像表示で型差異があっても落ちないように安全に表示する。
-    UI（描画結果）は変更しない。
-    """
     import numpy as np
     import io
     try:
@@ -319,7 +326,6 @@ def safe_show_image(obj: Any) -> None:
     except Exception:
         Image = None  # type: ignore
 
-    # None
     if obj is None:
         st.warning("画像データが None でした。生成に失敗している可能性があります。")
         return
@@ -328,22 +334,20 @@ def safe_show_image(obj: Any) -> None:
     try:
         import matplotlib.figure
         if isinstance(obj, matplotlib.figure.Figure):
-            st.pyplot(obj)
+            st.pyplot(obj)  # ここはそのままでOK（旧版でも動く）
             return
     except Exception:
         pass
 
-    # PIL.Image は必ず PNG バイト列へ変換してから表示（環境差対策）
+    # PIL.Image → PNGバイトへ変換してから表示（環境差対策）
     if Image is not None and isinstance(obj, Image.Image):
         try:
             img = obj
-            # 透過やパレット等のモードを統一
             if img.mode not in ("RGB", "RGBA"):
-                # パレットやF/LAなどはRGBA化が安全
                 img = img.convert("RGBA")
             buf = io.BytesIO()
-            img.save(buf, format="PNG")  # フォーマットはPNG固定で安定
-            st.image(buf.getvalue(), use_container_width=True)
+            img.save(buf, format="PNG")
+            _image_compat(buf.getvalue())
         except Exception as e:
             st.warning(f"PIL画像の表示で例外が発生しました: {e!s}")
         return
@@ -351,40 +355,38 @@ def safe_show_image(obj: Any) -> None:
     # NumPy array
     if isinstance(obj, np.ndarray):
         arr = obj
-        # 形状チェック
         if arr.ndim == 2:
-            pass  # gray OK
+            pass
         elif arr.ndim == 3 and arr.shape[2] in (3, 4):
             pass
         else:
             st.warning(f"想定外の配列shapeです: {arr.shape}")
             return
-        # dtypeをuint8へ
+
         if arr.dtype in (np.float32, np.float64):
             a = arr
             if np.nanmax(a) <= 1.0:
                 a = (np.nan_to_num(a) * 255.0).clip(0, 255).astype(np.uint8)
             else:
                 a = np.nan_to_num(a).clip(0, 255).astype(np.uint8)
-            st.image(a, use_container_width=True)
+            _image_compat(a)
         elif arr.dtype == np.uint8:
-            st.image(arr, use_container_width=True)
+            _image_compat(arr)
         else:
             a = np.nan_to_num(arr).clip(0, 255).astype(np.uint8)
-            st.image(a, use_container_width=True)
+            _image_compat(a)
         return
 
     # bytes / bytearray
     if isinstance(obj, (bytes, bytearray)):
-        st.image(obj, use_container_width=True)
+        _image_compat(obj)
         return
 
     # 文字列（URL or パス）
     if isinstance(obj, str):
-        st.image(obj, use_container_width=True)
+        _image_compat(obj)
         return
 
-    # それ以外
     st.warning(f"st.imageが扱えない型でした: {type(obj)}")
     
 # ========= ① 頻出キーワード =========
