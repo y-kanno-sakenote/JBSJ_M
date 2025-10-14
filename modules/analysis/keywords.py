@@ -509,11 +509,20 @@ def _render_cooccur_block(df: pd.DataFrame) -> None:
         y_from, y_to = st.slider("対象年（範囲）", min_value=ymin, max_value=ymax,
                                  value=(ymin, ymax), key="kw_co_year")
     with c2:
-        min_edge = st.number_input("エッジ最小回数 (w≥)", min_value=1, max_value=50, value=3, step=1, key="kw_co_minw")
+        min_edge = st.number_input(
+            "最低共起数（同時出現）",
+            min_value=1, max_value=50, value=3, step=1, key="kw_co_minw",
+            help="同じ論文内で2つのキーワードが一緒に登場した回数です。値を上げるほど“よく組み合わせて語られる”強い関係だけが残ります。"
+        )
+
     with c3:
-        topN = st.number_input("ノード上限（出現上位）", min_value=30, max_value=300, value=120, step=10, key="kw_co_topn")
+        topN = st.number_input(
+            "表示するキーワード数（多い順）",
+            min_value=30, max_value=300, value=120, step=10, key="kw_co_topn",
+            help="出現回数が多いキーワードから上位N語だけを残します。増やすほど網は細かくなりますが、見づらく/重くなることがあります。"
+        )
     with c4:
-        st.caption("下のボタンで描画します。")
+        st.caption("")
 
     # ▼ 候補リストを自動抽出
     targets_all = sorted({w for v in df.get("対象物_top3", pd.Series(dtype=str)).fillna("")
@@ -566,7 +575,7 @@ def _render_trend_block(df: pd.DataFrame) -> None:
     st.markdown("### ③ トレンド分析（経年変化）")
 
     ymin, ymax = year_min_max(df)
-    c1, c2, c3 = st.columns([1,1,1])
+    c1, c2, c3,c4 = st.columns([1,1,1,1])
     with c1:
         y_from, y_to = st.slider("対象年（範囲）", min_value=ymin, max_value=ymax,
                                  value=(ymin, ymax), key="kw_trend_year")
@@ -574,6 +583,8 @@ def _render_trend_block(df: pd.DataFrame) -> None:
         topn = st.number_input("表示する語数（TopN）", min_value=5, max_value=50, value=15, step=5, key="kw_trend_topn")
     with c3:
         ma = st.number_input("移動平均（年）", min_value=1, max_value=7, value=1, step=1, key="kw_trend_ma")
+    with c4:
+        st.caption("")
 
     use = _apply_filters(df, y_from, y_to, [], [])
     yearly = yearly_keyword_counts(use)
