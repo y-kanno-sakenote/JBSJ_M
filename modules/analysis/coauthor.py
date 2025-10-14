@@ -238,10 +238,10 @@ def _render_copy_grid(authors: List[str]) -> None:
         return
     html = """
     <style>
-      .copy-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 8px; }
+      .copy-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 6px; }
       .copy-chip { display:flex; align-items:center; justify-content:space-between;
-                   padding:6px 10px; background:#f5f5f7; border:1px solid #ddd; border-radius:8px; font-size:13px; }
-      .copy-chip button { border:none; background:#e9e9ee; padding:4px 8px; border-radius:6px; cursor:pointer; }
+                   padding:4px 8px; background:#f5f5f7; border:1px solid #ddd; border-radius:8px; font-size:12px; }
+      .copy-chip button { border:none; background:#e9e9ee; padding:3px 6px; border-radius:6px; cursor:pointer; }
       .copy-chip button:hover { background:#dcdce3; }
     </style>
     <div class="copy-grid">
@@ -262,7 +262,7 @@ def _render_copy_grid(authors: List[str]) -> None:
         """
     html += "</div>"
     import streamlit.components.v1 as components
-    components.html(html, height=400, scrolling=True)
+    components.html(html, height=220, scrolling=True)
 
 
 # ========= UI構築（サブタブ対応） =========

@@ -317,6 +317,42 @@ def _draw_pyvis_from_edges(edges: pd.DataFrame, height_px: int = 650) -> None:
     html = net.generate_html(notebook=False)  # ← ブラウザ自動オープン回避
     st.components.v1.html(html, height=height_px, scrolling=True)
 
+# ==== キーワード用：クイックコピー（小さな補助UI。既存UIを崩さない） ====
+from typing import List as _ListForCopy
+
+def _render_copy_grid(items: _ListForCopy[str]) -> None:
+    """与えられた文字列リストをグリッド表示し、ワンクリックでコピーできる小UI。
+    グラフや表の直下に expander として配置する想定。"""
+    if not items:
+        return
+    html = """
+    <style>
+      .copy-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 6px; }
+      .copy-chip { display:flex; align-items:center; justify-content:space-between;
+                   padding:4px 8px; background:#f5f5f7; border:1px solid #ddd; border-radius:8px; font-size:12px; }
+      .copy-chip button { border:none; background:#e9e9ee; padding:3px 6px; border-radius:6px; cursor:pointer; }
+      .copy-chip button:hover { background:#dcdce3; }
+    </style>
+    <div class="copy-grid">
+    """
+    for name in items:
+        safe_text = str(name).replace("\\", "\\\\").replace("'", "\\'")
+        html += f"""
+        <div class=\"copy-chip\">
+          <span>{safe_text}</span>
+          <button onclick="navigator.clipboard.writeText('{safe_text}');
+                           const n=document.createElement('div');
+                           n.textContent='📋「{safe_text}」をコピーしました';
+                           n.style='position:fixed;bottom:80px;right:30px;padding:10px 18px;background:#333;color:#fff;border-radius:8px;opacity:0.94;font-size:13px;z-index:9999';
+                           document.body.appendChild(n); setTimeout(()=>n.remove(),1400);">
+            📋
+          </button>
+        </div>
+        """
+    html += "</div>"
+    import streamlit.components.v1 as components  # 局所import（古い環境互換）
+    components.html(html, height=200, scrolling=True)
+
 # ==== 追加：安全表示ヘルパー（UIは変えずに落ちにくく） ====
 def safe_show_image(obj: Any) -> None:
     import numpy as np
@@ -430,8 +466,22 @@ def _render_freq_block(df: pd.DataFrame) -> None:
         fig = px.bar(freq_df, x="キーワード", y="件数", text_auto=True, title="頻出キーワード（上位）")
         fig.update_layout(margin=dict(l=10,r=10,t=40,b=10), height=420)
         st.plotly_chart(fig, use_container_width=True)
+        # クイックコピー（TopN キーワード）
+        with st.expander("📋 キーワードをすぐコピー（補助機能）", expanded=False):
+            try:
+                _copy_items = freq_df["キーワード"].astype(str).tolist()
+            except Exception:
+                _copy_items = []
+            _render_copy_grid(_copy_items)
     else:
         st.bar_chart(freq_df.set_index("キーワード")["件数"])
+        # クイックコピー（TopN キーワード）
+        with st.expander("📋 キーワードをすぐコピー（補助機能）", expanded=False):
+            try:
+                _copy_items = freq_df["キーワード"].astype(str).tolist()
+            except Exception:
+                _copy_items = []
+            _render_copy_grid(_copy_items)
 
     # WordCloud（任意・ボタン生成）
     with st.expander("☁ WordCloud（任意）", expanded=False):
@@ -496,6 +546,14 @@ def _render_cooccur_block(df: pd.DataFrame) -> None:
     st.caption(f"エッジ数: {len(edges)}")
     st.dataframe(edges.head(200), use_container_width=True, hide_index=True)
 
+    # クイックコピー（ノード名）
+    with st.expander("📋 ノード名をすぐコピー（補助機能）", expanded=False):
+        if not edges.empty:
+            _nodes = sorted(set(edges["src"].astype(str)).union(set(edges["dst"].astype(str))))
+        else:
+            _nodes = []
+        _render_copy_grid(_nodes)
+
     with st.expander("🕸️ ネットワークを描画（PyVis / 任意依存）", expanded=False):
         if HAS_PYVIS and HAS_NX:
             if st.button("🌐 描画する", key="kw_co_draw"):
@@ -550,8 +608,16 @@ def _render_trend_block(df: pd.DataFrame) -> None:
         )
         fig.update_layout(height=520, margin=dict(l=10,r=10,t=30,b=10))
         st.plotly_chart(fig, use_container_width=True)
+        # クイックコピー（プロット対象のキーワード＝凡例と一致）
+        with st.expander("📋 キーワードをすぐコピー（補助機能）", expanded=False):
+            _legend_items = [c for c in piv.columns if c != "発行年"] if hasattr(piv, 'columns') else []
+            _render_copy_grid([str(x) for x in _legend_items])
     else:
         st.line_chart(piv)
+        # クイックコピー（プロット対象のキーワード＝凡例と一致）
+        with st.expander("📋 キーワードをすぐコピー（補助機能）", expanded=False):
+            _legend_items = [c for c in piv.columns if c != "発行年"] if hasattr(piv, 'columns') else []
+            _render_copy_grid([str(x) for x in _legend_items])
         
 # ========= エクスポート：タブ本体 =========
 def render_keyword_tab(df: pd.DataFrame) -> None:
