@@ -149,31 +149,9 @@ def _render_distribution_block(df: pd.DataFrame) -> None:
     )
     tg_flat = [w for lst in tg_series for w in lst]
     tg_counts = pd.Series(tg_flat, dtype="object").value_counts()
-
-    if tg_counts.empty:
-        st.info("対象物の集計対象データがありません。")
-    else:
-        tg_df = tg_counts.reset_index()
-        tg_df.columns = ["対象物", "件数"]
-        tg_df = tg_df.sort_values("件数", ascending=False)
-        top_n = st.number_input("対象物の表示件数", min_value=5, max_value=100, value=20, step=5, key="tg_topn")
-        tg_df_top = tg_df.head(int(top_n))
-
-        try:
-            import plotly.express as px  # 遅延import
-            fig = px.bar(
-                tg_df_top,
-                x="対象物",
-                y="件数",
-                text_auto=True,
-                title="対象物の出現件数（上位）",
-            )
-            fig.update_layout(margin=dict(l=10, r=10, t=40, b=10), height=420)
-            st.plotly_chart(fig, use_container_width=True)
-        except Exception:
-            st.bar_chart(tg_df_top.set_index("対象物")["件数"])
-
-    st.divider()
+    tg_df = tg_counts.reset_index()
+    tg_df.columns = ["対象物", "件数"]
+    tg_df = tg_df.sort_values("件数", ascending=False)
 
     # ---- 研究タイプ集計 ----
     tp_series = (
@@ -183,59 +161,64 @@ def _render_distribution_block(df: pd.DataFrame) -> None:
     )
     tp_flat = [w for lst in tp_series for w in lst]
     tp_counts = pd.Series(tp_flat, dtype="object").value_counts()
+    tp_df = tp_counts.reset_index()
+    tp_df.columns = ["研究タイプ", "件数"]
+    tp_df = tp_df.sort_values("件数", ascending=False)
 
-    if tp_counts.empty:
-        st.info("研究タイプの集計対象データがありません。")
-    else:
-        tp_df = tp_counts.reset_index()
-        tp_df.columns = ["研究タイプ", "件数"]
-        tp_df = tp_df.sort_values("件数", ascending=False)
-        top_n_tp = st.number_input("研究タイプの表示件数", min_value=5, max_value=100, value=20, step=5, key="tp_topn")
-        tp_df_top = tp_df.head(int(top_n_tp))
+    # 合計件数を計算
+    tg_total = int(tg_df["件数"].sum()) if not tg_df.empty else 0
+    tp_total = int(tp_df["件数"].sum()) if not tp_df.empty else 0
 
-        try:
-            import plotly.express as px
-            fig2 = px.bar(
-                tp_df_top,
-                x="研究タイプ",
-                y="件数",
-                text_auto=True,
-                title="研究タイプの出現件数（上位）",
-            )
-            fig2.update_layout(margin=dict(l=10, r=10, t=40, b=10), height=420)
-            st.plotly_chart(fig2, use_container_width=True)
-        except Exception:
-            st.bar_chart(tp_df_top.set_index("研究タイプ")["件数"])
-
-
-# ---- ①-2 追加：対象物×研究タイプのクロスヒートマップ（年範囲＋最小件数フィルタ付き）----
-def _render_cross_block(df: pd.DataFrame) -> None:
-    st.markdown("### ①-2 対象物 × 研究タイプ（クロスヒートマップ）")
-
-    ymin_all, ymax_all = _year_min_max(df)
-    c1, c2 = st.columns([2, 1])
-    with c1:
-        y_from, y_to = st.slider(
-            "対象年（範囲）",
-            min_value=ymin_all, max_value=ymax_all,
-            value=(ymin_all, ymax_all),
-            key="obj_cross_year",
-        )
-    with c2:
-        min_cnt = st.number_input("表示する最小件数 (≥)", min_value=1, max_value=50, value=3, step=1, key="obj_cross_min")
-
-    # 年フィルタだけ軽量に適用
-    use = _apply_filters(df, y_from, y_to, [], [])
-
-    cross = _cross_counts(use, "対象物_top3", "研究タイプ_top3")
-    if cross.empty:
-        st.info("クロス集計できるデータがありません。")
+    if tg_df.empty and tp_df.empty:
+        st.info("該当データがありません。フィルタを調整してください。")
         return
 
-    # 最小件数でフィルタ
-    cross = cross[cross["count"] >= int(min_cnt)].copy()
+    c1, c2 = st.columns(2)
+    with c1:
+        if tg_df.empty:
+            st.info("該当データがありません。フィルタを調整してください。")
+        else:
+            try:
+                import plotly.express as px  # 遅延import
+                fig = px.bar(
+                    tg_df,
+                    x="対象物",
+                    y="件数",
+                    text_auto=True,
+                    title=f"対象物の出現件数（合計: {tg_total:,}件）",
+                )
+                fig.update_layout(margin=dict(l=10, r=10, t=40, b=10), height=420, yaxis_title="件数")
+                fig.update_xaxes(tickangle=45, automargin=True)
+                st.plotly_chart(fig, use_container_width=True)
+            except Exception:
+                st.bar_chart(tg_df.set_index("対象物")["件数"])
+
+    with c2:
+        if tp_df.empty:
+            st.info("該当データがありません。フィルタを調整してください。")
+        else:
+            try:
+                import plotly.express as px
+                fig2 = px.bar(
+                    tp_df,
+                    x="研究タイプ",
+                    y="件数",
+                    text_auto=True,
+                    title=f"研究タイプの出現件数（合計: {tp_total:,}件）",
+                )
+                fig2.update_layout(margin=dict(l=10, r=10, t=40, b=10), height=420, yaxis_title="件数")
+                fig2.update_xaxes(tickangle=45, automargin=True)
+                st.plotly_chart(fig2, use_container_width=True)
+            except Exception:
+                st.bar_chart(tp_df.set_index("研究タイプ")["件数"])
+
+
+def _render_cross_block(df: pd.DataFrame) -> None:
+    st.markdown("### 🔥 対象物 × 研究タイプ（クロスヒートマップ）")
+
+    cross = _cross_counts(df, "対象物_top3", "研究タイプ_top3")
     if cross.empty:
-        st.info("この閾値ではデータがありません。閾値を下げてください。")
+        st.info("クロス集計できるデータがありません。")
         return
 
     # ピボット（行=研究タイプ、列=対象物）
@@ -243,26 +226,59 @@ def _render_cross_block(df: pd.DataFrame) -> None:
     piv.index.name = "研究タイプ"
     piv.columns.name = "対象物"
 
-    # ★ 並び順を固定（指定順 → 未定義カテゴリは後尾で五十音/アルファベット順）
+    # 並び順を固定（指定順 → 未定義カテゴリは後尾で五十音/アルファベット順）
     cols_order = [x for x in TARGET_ORDER if x in piv.columns] + sorted([x for x in piv.columns if x not in TARGET_ORDER])
     idx_order  = [x for x in TYPE_ORDER   if x in piv.index  ] + sorted([x for x in piv.index  if x not in TYPE_ORDER])
     piv = piv.reindex(index=idx_order, columns=cols_order)
 
+    # 下部に配置するチェックボックスの現在値をセッションから参照（初期は False）
+    show_values = bool(st.session_state.get("obj_cross_show_values", False))
+
     if HAS_PX:
+        import plotly.express as px
         fig = px.imshow(
             piv,
             aspect="auto",
             color_continuous_scale="Blues",
             labels=dict(color="件数"),
         )
-        # 念のため軸カテゴリ順も明示（px.imshow は DataFrame順だが保険）
-        fig.update_xaxes(categoryorder="array", categoryarray=cols_order)
-        fig.update_yaxes(categoryorder="array", categoryarray=idx_order)
-
-        fig.update_layout(height=560, margin=dict(l=10, r=10, t=30, b=10))
+        fig.update_xaxes(categoryorder="array", categoryarray=cols_order, tickangle=45, automargin=True)
+        fig.update_yaxes(categoryorder="array", categoryarray=idx_order, automargin=True)
+        # 値表示とホバーの明確化（セル値はトグルでON/OFF）
+        if show_values:
+            try:
+                fig.update_traces(
+                    text=piv.values,
+                    texttemplate="%{text}",
+                    hovertemplate="研究タイプ=%{y}<br>対象物=%{x}<br>件数=%{z}<extra></extra>"
+                )
+            except Exception:
+                # 古いPlotlyでもホバーは維持
+                fig.update_traces(hovertemplate="研究タイプ=%{y}<br>対象物=%{x}<br>件数=%{z}<extra></extra>")
+        else:
+            fig.update_traces(hovertemplate="研究タイプ=%{y}<br>対象物=%{x}<br>件数=%{z}<extra></extra>")
+        fig.update_layout(height=560, margin=dict(l=10, r=10, t=30, b=10), coloraxis_colorbar_title="件数")
         st.plotly_chart(fig, use_container_width=True)
+        # 右下に配置するセル値表示トグル
+        rb_spacer, rb_cb = st.columns([6, 1])
+        with rb_cb:
+            st.checkbox(
+                "セルの値を表示",
+                value=show_values,
+                key="obj_cross_show_values",
+                help="ヒートマップの各セルに件数を直接表示します。表示すると読みやすくなる一方、カテゴリ数が多い場合は見づらくなることがあります。"
+            )
     else:
         st.dataframe(piv, use_container_width=True)
+        # 右下トグル（データフレーム表示時も配置のみ実施）
+        rb_spacer, rb_cb = st.columns([6, 1])
+        with rb_cb:
+            st.checkbox(
+                "セルの値を表示",
+                value=show_values,
+                key="obj_cross_show_values",
+                help="ヒートマップの各セルに件数を直接表示します。表示すると読みやすくなる一方、カテゴリ数が多い場合は見づらくなることがあります。"
+            )
 
 # ========= ② 経年トレンド =========
 @st.cache_data(ttl=600, show_spinner=False)
@@ -486,17 +502,49 @@ def render_targettype_tab(df: pd.DataFrame) -> None:
 
     tab1, tab2, tab3 = st.tabs([
         "① 構成比・クロス集計",
-        "② 経年変化",
-        "③ 共起ネットワーク",
+        "② 共起ネットワーク",
+        "③ トレンド分析",
     ])
 
     with tab1:
-        _render_distribution_block(df)
+        # --- 共通フィルタ（このサブタブ全体に適用） ---
+        st.markdown(
+            "<style>.sticky-filters{position:sticky;top:0;z-index:999;background:var(--background-color,#ffffff);padding:0.25rem 0 0.35rem;border-bottom:1px solid #eee;}</style>",
+            unsafe_allow_html=True
+        )
+        ymin_all, ymax_all = _year_min_max(df)
+        st.markdown('<div class="sticky-filters">', unsafe_allow_html=True)
+        c1, c2, c3 = st.columns([2, 1, 1])
+        with c1:
+            y_from, y_to = st.slider(
+                "対象年（範囲）",
+                min_value=ymin_all, max_value=ymax_all,
+                value=(ymin_all, ymax_all),
+                key="obj_overview_year",
+            )
+        df_year = _apply_filters(df, y_from, y_to, [], [])
+        tg_all = sorted({t for v in df_year.get("対象物_top3", pd.Series(dtype=str)).fillna("") for t in split_multi(v)})
+        tp_all = sorted({t for v in df_year.get("研究タイプ_top3", pd.Series(dtype=str)).fillna("") for t in split_multi(v)})
+        tg_all = _order_options(tg_all, TARGET_ORDER)
+        tp_all = _order_options(tp_all, TYPE_ORDER)
+        with c2:
+            tg_needles = st.multiselect("対象物で絞り込み", options=tg_all, default=[], key="obj_overview_tg")
+        with c3:
+            tp_needles = st.multiselect("研究タイプで絞り込み", options=tp_all, default=[], key="obj_overview_tp")
+        st.markdown('</div>', unsafe_allow_html=True)
+
+        # 共通フィルタ適用
+        use = _apply_filters(df, y_from, y_to, tg_needles, tp_needles)
+
+        # 上段：対象物/研究タイプの並列バー
+        _render_distribution_block(use)
+
+        # 下段：クロスヒートマップ
         st.divider()
-        _render_cross_block(df)   # ← 追加
+        _render_cross_block(use)
 
     with tab2:
-        _render_trend_block(df)
+        _render_cooccurrence_block(df)
 
     with tab3:
-        _render_cooccurrence_block(df)
+        _render_trend_block(df)
