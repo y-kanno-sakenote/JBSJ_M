@@ -412,23 +412,94 @@ def _draw_pyvis_from_edges(edges: pd.DataFrame, height_px: int = 650) -> None:
         st.warning("エッジがありません。")
         return
 
-    # NX Graph
+    import math
+    import networkx as nx
+    from pyvis.network import Network
+
+    # 1) NetworkX Graph（weightつき）
     G = nx.Graph()
     for _, r in edges.iterrows():
-        s, t, w = r["src"], r["dst"], int(r["weight"])
+        s, t, w = str(r["src"]), str(r["dst"]), int(r["weight"])
         if G.has_edge(s, t):
             G[s][t]["weight"] += w
         else:
             G.add_edge(s, t, weight=w)
 
-    # PyVis
+    # 2) ノード強度（エッジ重みの総和）＝重要度の素点
+    strength = {}
+    for n in G.nodes():
+        strength[n] = sum(d.get("weight", 1) for _, _, d in G.edges(n, data=True))
+
+    # 3) コミュニティ検出（色分け用）
+    try:
+        comms = list(nx.algorithms.community.greedy_modularity_communities(G, weight="weight"))
+        comm_id = {}
+        for i, cset in enumerate(comms):
+            for n in cset:
+                comm_id[n] = i
+    except Exception:
+        comm_id = {n: 0 for n in G.nodes()}
+
+    # 4) ラベルを出すノード（強い順に上位だけにラベル）
+    #    数は自動（最大でも40）。小さいネットなら全ラベル。
+    max_labels = 40
+    sorted_nodes = sorted(G.nodes(), key=lambda n: strength.get(n, 0), reverse=True)
+    label_set = set(sorted_nodes[: max_labels if len(sorted_nodes) > max_labels else len(sorted_nodes)])
+
+    # 5) PyVis へ
     net = Network(height=f"{height_px}px", width="100%", bgcolor="#ffffff", font_color="#222")
-    net.barnes_hut(gravity=-30000, central_gravity=0.25, spring_length=120, spring_strength=0.02)
-    net.from_nx(G)
-    # 生成→埋め込み（open_browserを使わない）
+    # 物理＆相互作用を調整：重なり軽減・ホバー強化
+    net.set_options("""
+    {
+      "interaction": { "hover": true, "tooltipDelay": 200, "zoomView": true, "dragView": true },
+      "physics": {
+        "stabilization": { "enabled": true, "iterations": 200 },
+        "barnesHut": { "gravitationalConstant": -25000, "centralGravity": 0.2, "springLength": 140, "springConstant": 0.025, "damping": 0.4, "avoidOverlap": 0.5 }
+      },
+      "nodes": { "shape": "dot" },
+      "edges": { "smooth": { "type": "dynamic" } }
+    }
+    """)
+
+    # ノード追加（サイズ=logスケール、色=コミュニティ、ラベルは上位のみ）
+    # 目安: size 6〜28
+    def size_for(n):
+        s = max(1.0, float(strength.get(n, 1)))
+        return max(6.0, min(28.0, 6.0 + 4.0 * math.log1p(s)))
+
+    for n in G.nodes():
+        lbl = n if n in label_set else ""   # テキストラベルは上位だけ
+        title = f"{n}<br>総共起重み: {strength.get(n,0):,.0f}"  # ホバーで全ノード名を見せる
+        net.add_node(
+            n,
+            label=lbl,
+            title=title,
+            value=strength.get(n, 0),
+            size=size_for(n),
+            group=int(comm_id.get(n, 0)),
+        )
+
+    # エッジ追加（太さ=logスケール）
+    def width_for(w):
+        return max(1.0, min(10.0, 1.0 + 2.0 * math.log1p(float(w))))
+    for s, t, d in G.edges(data=True):
+        w = d.get("weight", 1)
+        net.add_edge(s, t, value=float(w), width=width_for(w), title=f"共起: {int(w)} 回")
+
+    # 6) 生成→埋め込み
     html = net.generate_html(notebook=False)
     st.components.v1.html(html, height=height_px, scrolling=True)
 
+    # 7) ダウンロード（既存のまま）
+    st.download_button(
+        "📥 ネットワークHTML",
+        data=html.encode("utf-8"),
+        file_name="cooccurrence_network.html",
+        mime="text/html",
+        key="dl_pyvis_html",
+        help="このネットワークを単独のHTMLファイルとして保存します（ブラウザでそのまま開けます）。"
+    )
+    
 def _render_cooccurrence_block(df: pd.DataFrame) -> None:
     st.markdown("### ③ 共起ネットワーク（対象物・研究タイプ）")
 
