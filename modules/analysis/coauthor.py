@@ -523,12 +523,75 @@ def render_coauthor_tab(df: pd.DataFrame, use_disk_cache: bool = False):
 
     # ===== ① 論文数 =====
     with tab_count:
-        # 右寄せでランキング件数のみ
-        top_n = st.number_input("ランキング件数", min_value=5, max_value=200, value=50, step=5, key="res_cnt_topn")
+        # --- 詳細フィルタ行（ランキング件数 + 集計期間 + 単著/共著 + 著者ポジション） ---
+        c1, c2, c3, c4 = st.columns([2, 2, 2, 1])
+        with c1:
+            mode = st.radio(
+                "著者数フィルタ",
+                ["すべて", "単著のみ", "共著のみ"],
+                horizontal=True,
+                key="res_cnt_mode",
+                label_visibility="visible",
+            )
+
+        with c2:
+            period = st.radio(
+                "集計期間",
+                ["累計", "直近1年", "直近3年", "直近5年"],
+                horizontal=True,
+                key="res_cnt_period",
+                label_visibility="visible",
+            )
+        with c3:
+            position = st.multiselect("著者ポジション", ["筆頭のみ","責任著者のみ"], key="res_cnt_position")
+        with c4:
+            top_n = st.number_input("ランキング件数", min_value=5, max_value=200, value=50, step=5, key="res_cnt_topn")
+
+        # --- 期間・著者数・ポジションでフィルタリング ---
+        df_rank = df_use
+
+        # 期間フィルタ
+        if period != "累計" and "発行年" in df_rank.columns:
+            years = pd.to_numeric(df_rank["発行年"], errors="coerce")
+            span = {"直近1年":1, "直近3年":3, "直近5年":5}[period]
+            y_max = int(years.max()) if years.notna().any() else None
+            if y_max is not None:
+                df_rank = df_rank[(years >= y_max - span + 1) & (years <= y_max)]
+
+        # 単著/共著フィルタ
+        if mode != "すべて":
+            df_rank = df_rank.copy()
+            df_rank["著者数"] = df_rank["著者"].fillna("").map(lambda s: len(split_authors(s)))
+            if mode == "単著のみ":
+                df_rank = df_rank[df_rank["著者数"] == 1]
+            else:
+                df_rank = df_rank[df_rank["著者数"] >= 2]
+
+        # 筆頭/責任著者フィルタは、カウント時に安全に処理するため、ここでは除外
 
         # --- データ準備（フィルタ適用後の著者ランキング） ---
-        use = df_use
-        s = _author_total_counts(use)
+        use = df_rank
+        # 位置指定がある場合は、カウント段階で筆頭/責任著者のみを加算
+        if position:
+            bags = []
+            for _, r in df_rank.iterrows():
+                names = list(dict.fromkeys(split_authors(r.get("著者", ""))))
+                if not names:
+                    continue
+                chosen = []
+                if "筆頭のみ" in position and len(names) >= 1:
+                    chosen.append(names[0])
+                if "責任著者のみ" in position and len(names) >= 1:
+                    chosen.append(names[-1])
+                # 両方同じ場合（単著など）は重複排除
+                if chosen:
+                    bags.extend(list(dict.fromkeys(chosen)))
+            if bags:
+                s = pd.Series(bags, dtype="object").value_counts().sort_values(ascending=False)
+            else:
+                s = pd.Series(dtype=int)
+        else:
+            s = _author_total_counts(df_rank)
         if s.empty:
             st.info("条件に合うデータがありません。")
         else:
