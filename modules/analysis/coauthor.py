@@ -241,7 +241,7 @@ def _draw_network(edges: pd.DataFrame,
                   top_nodes: List[str] | None = None,
                   min_weight: int = 1,
                   height_px: int = 650) -> None:
-    """PyVisで描画（任意）。依存が無ければスキップ。"""
+    """PyVisで描画。依存が無ければスキップ。"""
     if not (HAS_NX and HAS_PYVIS):
         st.info("グラフ描画には networkx / pyvis が必要です。表は利用できます。")
         return
@@ -488,7 +488,7 @@ def render_coauthor_tab(df: pd.DataFrame, use_disk_cache: bool = False):
                         y="著者",
                         orientation="h",
                         text_auto=True,
-                        title="上位著者（横棒グラフ）",
+                        title="著者Top10",
                     )
                     fig.update_layout(
                         margin=dict(l=6, r=6, t=40, b=6),
@@ -503,7 +503,7 @@ def render_coauthor_tab(df: pd.DataFrame, use_disk_cache: bool = False):
                     st.bar_chart(rank.set_index("著者")["論文数"].head(10))
 
             # ④ クイックコピー：現在表示行（rank_shown）の著者だけ
-            with st.expander("📋 著者名をすぐコピー（補助機能）", expanded=False):
+            with st.expander("📋 著者名をすぐコピー", expanded=False):
                 _render_copy_grid(rank_shown["著者"].tolist())
 
             # ⑥ 対象物別のTop5著者（改善版UI）
@@ -642,10 +642,10 @@ def render_coauthor_tab(df: pd.DataFrame, use_disk_cache: bool = False):
             rank = centrality_from_edges(edges, metric=metric).head(int(top_n))
             st.dataframe(rank, use_container_width=True, hide_index=True)
             st.caption("※ 指標の意味：次数=つながりの数 / 媒介=橋渡し度 / 固有ベクトル=影響力（有力者との結び付き）")
-            with st.expander("📋 著者名をすぐコピー（補助機能）", expanded=False):
+            with st.expander("📋 著者名をすぐコピー", expanded=False):
                 _render_copy_grid(rank["著者"].tolist())
 
-            with st.expander("🕸️ ネットワークを可視化（任意・依存あり）", expanded=False):
+            with st.expander("🕸️ ネットワークを可視化", expanded=False):
                 st.caption("共著関係をインタラクティブに可視化します（networkx / pyvis が必要）。")
                 top_only = st.toggle("上位ランキングの周辺だけ表示（軽量）", value=True, key="res_net_toponly")
                 top_nodes = rank["著者"].tolist() if top_only else None
@@ -670,9 +670,9 @@ def render_coauthor_tab(df: pd.DataFrame, use_disk_cache: bool = False):
 
         c4, c5 = st.columns([1,1])
         with c4:
-            tg_sel = st.multiselect("対象物で絞り込み（任意）", options=targets_all, default=[], key="res_trend_tg")
+            tg_sel = st.multiselect("対象物で絞り込み", options=targets_all, default=[], key="res_trend_tg")
         with c5:
-            tp_sel = st.multiselect("研究タイプで絞り込み（任意）", options=types_all, default=[], key="res_trend_tp")
+            tp_sel = st.multiselect("研究タイプで絞り込み", options=types_all, default=[], key="res_trend_tp")
 
         use = _apply_filters_basic(df, y_from, y_to, tg_sel, tp_sel)
         yearly = _yearly_author_counts(use)
@@ -782,7 +782,7 @@ def render_coauthor_tab(df: pd.DataFrame, use_disk_cache: bool = False):
                 st.caption(highlight_example_text)
 
         # ▼ 著者名コピー（補助機能）：表示中の著者だけを並べる
-        with st.expander("📋 著者名をすぐコピー（補助機能）", expanded=False):
+        with st.expander("📋 著者名をすぐコピー", expanded=False):
             try:
                 current_authors = list(piv.columns)
             except Exception:
