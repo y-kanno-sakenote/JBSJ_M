@@ -18,6 +18,7 @@ from typing import List, Tuple
 import pandas as pd
 import streamlit as st
 
+
 # ========= 年レンジユーティリティ =========
 @st.cache_data(ttl=600, show_spinner=False)
 def _year_min_max(df: pd.DataFrame) -> Tuple[int, int]:
@@ -96,6 +97,92 @@ def col_contains_any(df_col: pd.Series, needles: List[str]) -> pd.Series:
         s = norm_key(v)
         return any(n in s for n in lo_needles)
     return df_col.fillna("").astype(str).map(_hit)
+
+
+# -------- 共通フィルタバー（外部 or 内蔵フォールバック） --------
+try:
+    # 他モジュールの共通フィルタ（存在すれば利用）
+    from modules.common.filters import render_filter_bar  # type: ignore
+except Exception:
+    # フォールバック：このファイル内で簡易版を提供（UIは最小限）
+    def render_filter_bar(df: pd.DataFrame, key_prefix: str = "authors",
+                          show_presets: bool = False, sticky: bool = False):
+        """共通フィルターバーの簡易版（年・対象物・研究タイプ）。"""
+        ymin, ymax = _year_min_max(df)
+
+        # 候補抽出（表示順は指定配列を優先）
+        tg_all = sorted({w for v in df.get("対象物_top3", pd.Series(dtype=str)).fillna("")
+                         for w in split_multi(v) if w.strip()})
+        tp_all = sorted({w for v in df.get("研究タイプ_top3", pd.Series(dtype=str)).fillna("")
+                         for w in split_multi(v) if w.strip()})
+        tg_all = _sort_with_order(list(tg_all), TARGET_ORDER)
+        tp_all = _sort_with_order(list(tp_all), TYPE_ORDER)
+
+        c1, c2, c3 = st.columns([1, 1, 1])
+        with c1:
+            y_from, y_to = st.slider(
+                "対象年（範囲）",
+                min_value=ymin, max_value=ymax,
+                value=(ymin, ymax),
+                key=f"{key_prefix}_year",
+            )
+        with c2:
+            tg_sel = st.multiselect(
+                "対象物で絞り込み（部分一致）",
+                options=tg_all, default=[],
+                key=f"{key_prefix}_tg",
+            )
+        with c3:
+            tp_sel = st.multiselect(
+                "研究タイプで絞り込み（部分一致）",
+                options=tp_all, default=[],
+                key=f"{key_prefix}_tp",
+            )
+
+        return {"year": (y_from, y_to), "targets": tg_sel, "types": tp_sel}
+
+# ======== フィルタバー結果のアダプタ ========
+def _adapt_filter_bar(df: pd.DataFrame):
+    """
+    共通filters.render_filter_barの戻り値の差異を吸収するアダプタ。
+    - 期待: dict {"year":(from,to), "targets":[...], "types":[...]}
+    - 互換: DataFrame（既にフィルタ済み）を返す実装にも対応
+    返り値: (df_use, y_from, y_to, targets, types)
+    """
+    # まず安全に呼び出す（外部filtersが予期しない引数を受け取らない場合に対応）
+    try:
+        res = render_filter_bar(df, key_prefix="authors", show_presets=True, sticky=True)
+    except TypeError:
+        try:
+            res = render_filter_bar(df, key_prefix="authors")
+        except Exception:
+            res = df
+
+    # dict 形式ならそのまま取り出し
+    if isinstance(res, dict):
+        y_from, y_to = res.get("year", _year_min_max(df))
+        tg_sel = res.get("targets", [])
+        tp_sel = res.get("types", [])
+        df_use = _apply_filters_basic(df, y_from, y_to, tg_sel, tp_sel)
+        return df_use, int(y_from), int(y_to), list(tg_sel), list(tp_sel)
+
+    # DataFrame 形式ならフィルタ済みとして扱う
+    if isinstance(res, pd.DataFrame):
+        df_use = res
+        # 年範囲はフィルタ後のdfから推定
+        if "発行年" in df_use.columns:
+            y = pd.to_numeric(df_use["発行年"], errors="coerce")
+            if y.notna().any():
+                y_from, y_to = int(y.min()), int(y.max())
+            else:
+                y_from, y_to = _year_min_max(df)
+        else:
+            y_from, y_to = _year_min_max(df)
+        return df_use, y_from, y_to, [], []
+
+    # それ以外は元dfを返す（フォールバック）
+    y_from, y_to = _year_min_max(df)
+    return df, y_from, y_to, [], []
 
 
 # ========= 共著エッジ作成（フィルタ対応） =========
@@ -428,31 +515,19 @@ def render_coauthor_tab(df: pd.DataFrame, use_disk_cache: bool = False):
         st.warning("著者データが見つかりません。")
         return
 
-    # 年レンジ（全タブ共通の初期値に使用）
-    ymin, ymax = _year_min_max(df)
+    # 共通フィルターバー（年・対象物・研究タイプ）: アダプタで取得
+    df_use, y_from, y_to, tg_sel, tp_sel = _adapt_filter_bar(df)
 
     # サブタブ構成：①論文数 ②共著ネットワーク ③トレンド分析
     tab_count, tab_network, tab_trend = st.tabs(["① 論文数", "② 共著ネットワーク", "③ トレンド分析"])
 
     # ===== ① 論文数 =====
     with tab_count:
-        c1, c2, c3, c4 = st.columns([1,1,1,1])
-        with c1:
-            y_from, y_to = st.slider("対象年（範囲）", min_value=ymin, max_value=ymax, value=(ymin, ymax), key="res_cnt_year")
-        # 選択肢抽出＆順序固定
-        targets_all = sorted({w for v in df.get("対象物_top3", pd.Series(dtype=str)).fillna("") for w in split_multi(v)})
-        types_all   = sorted({w for v in df.get("研究タイプ_top3", pd.Series(dtype=str)).fillna("") for w in split_multi(v)})
-        targets_all = _sort_with_order(list(targets_all), TARGET_ORDER)
-        types_all   = _sort_with_order(list(types_all), TYPE_ORDER)
-        with c2:
-            tg_sel = st.multiselect("対象物で絞り込み", options=targets_all, default=[], key="res_cnt_tg")
-        with c3:
-            tp_sel = st.multiselect("研究タイプで絞り込み", options=types_all, default=[], key="res_cnt_tp")
-        with c4:
-            top_n = st.number_input("ランキング件数", min_value=5, max_value=200, value=50, step=5, key="res_cnt_topn")
+        # 右寄せでランキング件数のみ
+        top_n = st.number_input("ランキング件数", min_value=5, max_value=200, value=50, step=5, key="res_cnt_topn")
 
         # --- データ準備（フィルタ適用後の著者ランキング） ---
-        use = _apply_filters_basic(df, y_from, y_to, tg_sel, tp_sel)
+        use = df_use
         s = _author_total_counts(use)
         if s.empty:
             st.info("条件に合うデータがありません。")
@@ -583,19 +658,7 @@ def render_coauthor_tab(df: pd.DataFrame, use_disk_cache: bool = False):
 
     # ===== ② 共著ネットワーク（既存ロジックをそのまま） =====
     with tab_network:
-        # フィルタ（選択式）
-        c1, c2, c3 = st.columns([1,1,1])
-        with c1:
-            year_from, year_to = st.slider("対象年（範囲）", min_value=ymin, max_value=ymax, value=(ymin, ymax), key="res_net_year")
-        targets_all = sorted({w for v in df.get("対象物_top3", pd.Series(dtype=str)).fillna("") for w in split_multi(v)})
-        types_all   = sorted({w for v in df.get("研究タイプ_top3", pd.Series(dtype=str)).fillna("") for w in split_multi(v)})
-        targets_all = _sort_with_order(list(targets_all), TARGET_ORDER)
-        types_all   = _sort_with_order(list(types_all), TYPE_ORDER)
-        with c2:
-            tg_sel = st.multiselect("対象物で絞り込み", options=targets_all, default=[], key="res_net_tg")
-        with c3:
-            tp_sel = st.multiselect("研究タイプで絞り込み", options=types_all, default=[], key="res_net_tp")
-
+        # メトリック・ランキング件数・最小共著回数 のみ
         c4, c5, c6 = st.columns([1,1,1])
         with c4:
             metric = st.selectbox(
@@ -616,7 +679,9 @@ def render_coauthor_tab(df: pd.DataFrame, use_disk_cache: bool = False):
             min_w = st.number_input("描画する最小共著回数 (w≥)", min_value=1, max_value=20, value=2, step=1, key="res_net_minw")
 
         # エッジ構築（ディスクキャッシュは従来どおり利用可）
-        cache_key = f"coauth_edges|{year_from}-{year_to}|tg{','.join(tg_sel)}|tp{','.join(tp_sel)}"
+        _tg_key = ",".join(tg_sel) if tg_sel else ""
+        _tp_key = ",".join(tp_sel) if tp_sel else ""
+        cache_key = f"coauth_edges|{y_from}-{y_to}|tg{_tg_key}|tp{_tp_key}"
         edges = None
         if use_disk_cache and HAS_DISK_CACHE:
             path = cache_csv_path("coauthor_edges", cache_key)
@@ -624,7 +689,7 @@ def render_coauthor_tab(df: pd.DataFrame, use_disk_cache: bool = False):
             if cached is not None:
                 edges = cached
         if edges is None:
-            edges = build_coauthor_edges(df, year_from, year_to, tg_sel, tp_sel)
+            edges = build_coauthor_edges(df_use, y_from, y_to, tg_sel, tp_sel)
             if use_disk_cache and HAS_DISK_CACHE:
                 save_csv(edges, cache_csv_path("coauthor_edges", cache_key))
 
@@ -653,27 +718,13 @@ def render_coauthor_tab(df: pd.DataFrame, use_disk_cache: bool = False):
 
     # ===== ③ トレンド分析（論文数の年次推移） =====
     with tab_trend:
-        c1, c2, c3 = st.columns([1,1,1])
+        c1, c2 = st.columns([1,1])
         with c1:
-            y_from, y_to = st.slider("対象年（範囲）", min_value=ymin, max_value=ymax, value=(ymin, ymax), key="res_trend_year")
-        with c2:
             ma = st.number_input("移動平均（年）", min_value=1, max_value=7, value=1, step=1, key="res_trend_ma")
-        with c3:
+        with c2:
             max_auth = st.number_input("初期表示の著者数（上位）", min_value=3, max_value=30, value=12, step=1, key="res_trend_initn")
 
-        # 追加フィルタ（対象物・研究タイプ）
-        targets_all = sorted({w for v in df.get("対象物_top3", pd.Series(dtype=str)).fillna("") for w in split_multi(v)})
-        types_all   = sorted({w for v in df.get("研究タイプ_top3", pd.Series(dtype=str)).fillna("") for w in split_multi(v)})
-        targets_all = _sort_with_order(list(targets_all), TARGET_ORDER)
-        types_all   = _sort_with_order(list(types_all), TYPE_ORDER)
-
-        c4, c5 = st.columns([1,1])
-        with c4:
-            tg_sel = st.multiselect("対象物で絞り込み", options=targets_all, default=[], key="res_trend_tg")
-        with c5:
-            tp_sel = st.multiselect("研究タイプで絞り込み", options=types_all, default=[], key="res_trend_tp")
-
-        use = _apply_filters_basic(df, y_from, y_to, tg_sel, tp_sel)
+        use = df_use
         yearly = _yearly_author_counts(use)
         if yearly.empty:
             st.info("データがありません。")

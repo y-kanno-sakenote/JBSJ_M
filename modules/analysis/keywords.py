@@ -29,6 +29,83 @@ from typing import List, Tuple, Dict, Any
 import pandas as pd
 import streamlit as st
 from pathlib import Path
+# --- Robust import for render_filter_bar with error details ---
+_HAS_COMMON_FILTERS = False
+_FILTER_IMPORT_ERR: str | None = None
+try:
+    from modules.common.filters import render_filter_bar  # type: ignore
+    _HAS_COMMON_FILTERS = True
+except Exception as _e_abs:
+    try:
+        from ..common.filters import render_filter_bar  # type: ignore
+        _HAS_COMMON_FILTERS = True
+    except Exception as _e_rel:
+        _FILTER_IMPORT_ERR = f"abs[{type(_e_abs).__name__}: {_e_abs}] / rel[{type(_e_rel).__name__}: {_e_rel}]"
+
+def _fallback_filter_bar(df: pd.DataFrame, key_prefix: str = "kw", **kwargs):
+    """filters.py が無い/壊れているときの安全フォールバック（UI最小・そのまま返す）"""
+    msg = "共通フィルター（filters.py）の読込に失敗したため、データをそのまま表示します。"
+    if '_FILTER_IMPORT_ERR' in globals() and _FILTER_IMPORT_ERR:
+        msg += f"\n詳細: {_FILTER_IMPORT_ERR}"
+    st.warning(msg, icon="⚠️")
+    return df
+
+# --- helper: accept tuple/dict return from common filter bar ---
+def _df_from_filter_result(res, fallback_df: pd.DataFrame) -> pd.DataFrame:
+    """render_filter_bar may return df, (df, ...), or {"df": df}. Be tolerant."""
+    if isinstance(res, pd.DataFrame):
+        return res
+    try:
+        if isinstance(res, (list, tuple)) and len(res) > 0:
+            x0 = res[0]
+            if isinstance(x0, pd.DataFrame):
+                return x0
+        if isinstance(res, dict):
+            for k in ("df", "df_use", "filtered_df"):
+                v = res.get(k)
+                if isinstance(v, pd.DataFrame):
+                    return v
+    except Exception:
+        pass
+    return fallback_df
+
+# --- safe wrapper for filter bar ---
+def _safe_filter_bar(df: pd.DataFrame,
+                     key_prefix: str = "kw",
+                     target_order: list[str] | None = None,
+                     type_order: list[str] | None = None) -> pd.DataFrame:
+    """
+    modules.common.filters.render_filter_bar の存在/シグネチャ差/戻り値差を吸収し、常に DataFrame を返す。
+    """
+    if not _HAS_COMMON_FILTERS:
+        return _fallback_filter_bar(df, key_prefix=key_prefix)
+
+    # ① 期待シグネチャ
+    try:
+        res = render_filter_bar(
+            df,
+            key_prefix=key_prefix,
+            target_order=target_order,
+            type_order=type_order,
+        )
+        return _df_from_filter_result(res, df)
+    except TypeError:
+        # ② 古い/違うシグネチャ（key_prefix のみ）
+        try:
+            res = render_filter_bar(df, key_prefix=key_prefix)
+            return _df_from_filter_result(res, df)
+        except TypeError:
+            pass
+        # ③ 最低限の位置引数のみ
+        try:
+            res = render_filter_bar(df)
+            return _df_from_filter_result(res, df)
+        except Exception as e:
+            st.warning(f"共通フィルターの呼び出しに失敗しました（{e}）。元データを使用します。", icon="⚠️")
+            return df
+    except Exception as e:
+        st.warning(f"共通フィルターで例外が発生しました（{type(e).__name__}: {e}）。元データを使用します。", icon="⚠️")
+        return df
 
 def _image_compat(data):
     try:
@@ -222,6 +299,7 @@ def _apply_filters(df: pd.DataFrame,
     if types and "研究タイプ_top3" in use.columns:
         use = use[col_contains_any(use["研究タイプ_top3"], types)]
     return use
+
 
 def _extract_keywords_from_row(row: pd.Series) -> List[str]:
     words: List[str] = []
@@ -426,33 +504,14 @@ def safe_show_image(obj: Any) -> None:
     st.warning(f"st.imageが扱えない型でした: {type(obj)}")
     
 # ========= ① 頻出キーワード =========
-def _render_freq_block(df: pd.DataFrame) -> None:
-
-    ymin, ymax = year_min_max(df)
-    c1, c2, c3, c4 = st.columns([1,1,1,1])
+def _render_freq_block(df_use: pd.DataFrame) -> None:
+    c1, c2 = st.columns([1,1])
     with c1:
-        y_from, y_to = st.slider("対象年（範囲）", min_value=ymin, max_value=ymax,
-                                 value=(ymin, ymax), key="kw_freq_year")
-
-    # ▼ 候補リストを自動抽出
-    targets_all = sorted({w for v in df.get("対象物_top3", pd.Series(dtype=str)).fillna("")
-                          for w in _SPLIT_MULTI_RE.split(v) if w.strip()})
-    types_all   = sorted({w for v in df.get("研究タイプ_top3", pd.Series(dtype=str)).fillna("")
-                          for w in _SPLIT_MULTI_RE.split(v) if w.strip()})
-
-    # ★ 表示順を固定
-    targets_all = _order_options(targets_all, TARGET_ORDER)
-    types_all   = _order_options(types_all, TYPE_ORDER)
-
-    with c2:
-        tg_needles = st.multiselect("対象物で絞り込み", options=targets_all, default=[], key="kw_freq_tg")
-    with c3:
-        tp_needles = st.multiselect("研究タイプで絞り込み", options=types_all, default=[], key="kw_freq_tp")
-    with c4:
         topn = st.number_input("表示件数", min_value=5, max_value=100, value=30, step=5, key="kw_freq_topn")
+    with c2:
+        st.caption("")
 
-    # ▼ フィルタ反映
-    use = _apply_filters(df, y_from, y_to, tg_needles, tp_needles)
+    use = df_use
     freq = keyword_freq(use)
     freq_df = _freq_to_df(freq, int(topn))
 
@@ -499,50 +558,23 @@ def _render_freq_block(df: pd.DataFrame) -> None:
             st.caption("※ wordcloud が未導入のため非表示です。")
 
 # ========= ② 共起ネットワーク（遅延描画） =========
-def _render_cooccur_block(df: pd.DataFrame) -> None:
-
-    ymin, ymax = year_min_max(df)
-    c1, c2, c3, c4 = st.columns([1,1,1,1])
+def _render_cooccur_block(df_use: pd.DataFrame) -> None:
+    c1, c2 = st.columns([1,1])
     with c1:
-        y_from, y_to = st.slider("対象年（範囲）", min_value=ymin, max_value=ymax,
-                                 value=(ymin, ymax), key="kw_co_year")
-    with c2:
         min_edge = st.number_input(
             "最低共起数（同時出現）",
             min_value=1, max_value=50, value=3, step=1, key="kw_co_minw",
             help="同じ論文内で2つのキーワードが一緒に登場した回数です。値を上げるほど“よく組み合わせて語られる”強い関係だけが残ります。"
         )
-
-    with c3:
+    with c2:
         topN = st.number_input(
             "表示するキーワード数（多い順）",
             min_value=30, max_value=300, value=120, step=10, key="kw_co_topn",
             help="出現回数が多いキーワードから上位N語だけを残します。増やすほど網は細かくなりますが、見づらく/重くなることがあります。"
         )
-    with c4:
-        st.caption("")
 
-    # ▼ 候補リストを自動抽出
-    targets_all = sorted({w for v in df.get("対象物_top3", pd.Series(dtype=str)).fillna("")
-                          for w in _SPLIT_MULTI_RE.split(v) if w.strip()})
-    types_all   = sorted({w for v in df.get("研究タイプ_top3", pd.Series(dtype=str)).fillna("")
-                          for w in _SPLIT_MULTI_RE.split(v) if w.strip()})
-
-    # ★ 表示順を固定
-    targets_all = _order_options(targets_all, TARGET_ORDER)
-    types_all   = _order_options(types_all, TYPE_ORDER)
-
-    c5, c6 = st.columns([1,1])
-    with c5:
-        tg_needles = st.multiselect("対象物で絞り込み", options=targets_all, default=[], key="kw_co_tg")
-    with c6:
-        tp_needles = st.multiselect("研究タイプで絞り込み", options=types_all, default=[], key="kw_co_tp")
-
-    # ▼ フィルタ反映
-    use = _apply_filters(df, y_from, y_to, tg_needles, tp_needles)
-
+    use = df_use
     # --- キャッシュと描画ロジックはそのまま ---
-    cache_key = f"kwco|{y_from}-{y_to}|min{min_edge}|top{topN}|tg{','.join(tg_needles)}|tp{','.join(tp_needles)}"
     edges = build_keyword_cooccur_edges(use, int(min_edge))
     if not edges.empty and int(topN) > 0:
         deg = pd.concat([edges.groupby("src")["weight"].sum(),
@@ -567,23 +599,15 @@ def _render_cooccur_block(df: pd.DataFrame) -> None:
                 _draw_pyvis_from_edges(edges, height_px=680)
         else:
             st.info("networkx / pyvis が未導入のため、表のみ表示しています。")
-            
 # ========= ③ トレンド（経年変化） =========
-def _render_trend_block(df: pd.DataFrame) -> None:
-
-    ymin, ymax = year_min_max(df)
-    c1, c2, c3,c4 = st.columns([1,1,1,1])
+def _render_trend_block(df_use: pd.DataFrame) -> None:
+    c1, c2 = st.columns([1,1])
     with c1:
-        y_from, y_to = st.slider("対象年（範囲）", min_value=ymin, max_value=ymax,
-                                 value=(ymin, ymax), key="kw_trend_year")
-    with c2:
         topn = st.number_input("表示する語数（TopN）", min_value=5, max_value=50, value=15, step=5, key="kw_trend_topn")
-    with c3:
+    with c2:
         ma = st.number_input("移動平均（年）", min_value=1, max_value=7, value=1, step=1, key="kw_trend_ma")
-    with c4:
-        st.caption("")
 
-    use = _apply_filters(df, y_from, y_to, [], [])
+    use = df_use
     yearly = yearly_keyword_counts(use)
     if yearly.empty:
         st.info("データがありません。")
@@ -626,7 +650,6 @@ def _render_trend_block(df: pd.DataFrame) -> None:
         with st.expander("📋 キーワードをすぐコピー", expanded=False):
             _legend_items = [c for c in piv.columns if c != "発行年"] if hasattr(piv, 'columns') else []
             _render_copy_grid([str(x) for x in _legend_items])
-        
 # ========= エクスポート：タブ本体 =========
 def render_keyword_tab(df: pd.DataFrame) -> None:
     st.markdown(
@@ -660,6 +683,19 @@ def render_keyword_tab(df: pd.DataFrame) -> None:
         unsafe_allow_html=True,
     )
 
+    # データ存在チェック
+    if df is None or not isinstance(df, pd.DataFrame) or df.empty:
+        st.info("データが見つかりません。入力を確認してください。")
+        return
+
+    # タブ共通のフィルター（年・対象物・研究タイプ）
+    df_use = _safe_filter_bar(
+        df,
+        key_prefix="kw",
+        target_order=TARGET_ORDER,
+        type_order=TYPE_ORDER,
+    )
+
     tab1, tab2, tab3 = st.tabs([
         "① 頻出キーワード",
         "② 共起ネットワーク",
@@ -667,10 +703,10 @@ def render_keyword_tab(df: pd.DataFrame) -> None:
     ])
 
     with tab1:
-        _render_freq_block(df)
+        _render_freq_block(df_use)
 
     with tab2:
-        _render_cooccur_block(df)   # ← 遅延描画（ボタン式）
+        _render_cooccur_block(df_use)   # ← 遅延描画（ボタン式）
 
     with tab3:
-        _render_trend_block(df)
+        _render_trend_block(df_use)

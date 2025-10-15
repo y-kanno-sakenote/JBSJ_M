@@ -16,6 +16,25 @@ from typing import List, Tuple, Dict, Set
 import pandas as pd
 import streamlit as st
 
+# 共通フィルタバー
+from modules.common.filters import render_filter_bar
+def _df_from_filter_result(res, fallback_df: pd.DataFrame) -> pd.DataFrame:
+    if isinstance(res, pd.DataFrame):
+        return res
+    try:
+        if isinstance(res, (list, tuple)) and len(res) > 0:
+            x0 = res[0]
+            if isinstance(x0, pd.DataFrame):
+                return x0
+        if isinstance(res, dict):
+            for k in ("df", "df_use", "filtered_df"):
+                v = res.get(k)
+                if isinstance(v, pd.DataFrame):
+                    return v
+    except Exception:
+        pass
+    return fallback_df
+
 # 表示順（固定）
 TARGET_ORDER = [
     "清酒","ビール","ワイン","焼酎","アルコール飲料","発酵乳・乳製品",
@@ -302,19 +321,14 @@ def _yearly_counts(df: pd.DataFrame, col: str) -> pd.DataFrame:
     return c.sort_values(["発行年", "count"], ascending=[True, False]).reset_index(drop=True)
 
 def _render_trend_block(df: pd.DataFrame) -> None:
-
-    ymin_all, ymax_all = _year_min_max(df)
-    c1, c2, c3 = st.columns([1, 1, 1])
+    # 年スライダーなし、dfは既にフィルタ済み
+    c1, c2 = st.columns([1, 1])
     with c1:
-        y_from, y_to = st.slider("対象年（範囲）", min_value=ymin_all, max_value=ymax_all, value=(ymin_all, ymax_all), key="obj_trend_year")
-    with c2:
         target_mode = st.selectbox("対象", ["対象物_top3","研究タイプ_top3"], index=0, key="obj_trend_mode")
-    with c3:
+    with c2:
         ma = st.number_input("移動平均（年）", min_value=1, max_value=7, value=1, step=1, key="obj_trend_ma")
 
-    # 候補と選択
-    # 候補と選択
-    use = _apply_filters(df, y_from, y_to, [], [])
+    use = df  # 既にフィルタ済み
 
     # 生の候補を抽出
     all_items_raw = sorted({
@@ -328,7 +342,6 @@ def _render_trend_block(df: pd.DataFrame) -> None:
     else:  # "研究タイプ_top3"
         all_items = _order_options(all_items_raw, TYPE_ORDER)
 
-    # multiselect（表示順そのまま、デフォルト選択も同順で上位から）
     sel = st.multiselect(
         "表示する項目（複数可）",
         all_items[:1000],
@@ -345,7 +358,6 @@ def _render_trend_block(df: pd.DataFrame) -> None:
     if sel:
         piv = piv[[c for c in sel if c in piv.columns]]
 
-    # ★ 空列（全解除や不一致）なら描画せずに案内して終了
     if piv.shape[1] == 0:
         st.info("表示対象がありません。左のリストから1つ以上選んでください。")
         return
@@ -353,12 +365,9 @@ def _render_trend_block(df: pd.DataFrame) -> None:
     if ma > 1:
         piv = piv.rolling(window=int(ma), min_periods=1).mean()
 
-    # ★ 一意キー：年範囲・モード・選択・MAでユニーク化
-    # ★ 一意キー：年範囲・モード・選択・MAでユニーク化
     _sel_key = ",".join(sel) if sel else "__ALL__"
-    _uniq_key = f"obj_trend_plot|{y_from}-{y_to}|{target_mode}|{_sel_key}|ma{ma}"
+    _uniq_key = f"obj_trend_plot|{target_mode}|{_sel_key}|ma{ma}"
 
-    # ★ 凡例順を固定（対象物 or 研究タイプ で切替）
     if target_mode == "対象物_top3":
         legend_order = [x for x in TARGET_ORDER if x in piv.columns]
     else:
@@ -368,9 +377,8 @@ def _render_trend_block(df: pd.DataFrame) -> None:
         fig = px.line(
             piv.reset_index().melt(id_vars="発行年", var_name="項目", value_name="件数"),
             x="発行年", y="件数", color="項目", markers=True,
-            category_orders={"項目": legend_order}  # ← 順序のみ固定
+            category_orders={"項目": legend_order}
         )
-        # 位置はいじらずデフォルトに戻す。高さ・マージンだけ維持。
         fig.update_layout(height=520, margin=dict(l=10, r=10, t=30, b=10))
         st.plotly_chart(fig, use_container_width=True, key=_uniq_key)
     else:
@@ -501,59 +509,23 @@ def _draw_pyvis_from_edges(edges: pd.DataFrame, height_px: int = 650) -> None:
         help="このネットワークを単独のHTMLファイルとして保存します（ブラウザでそのまま開けます）。"
     )
     
-def _render_cooccurrence_block(df: pd.DataFrame) -> None:
-
-    ymin_all, ymax_all = _year_min_max(df)
-    c1, c2, c3, c4 = st.columns([1, 1, 1, 1])
+def _render_cooccurrence_block(df_use: pd.DataFrame) -> None:
+    # 年・対象物・研究タイプのフィルタUIは除外し、ネットワーク種別・しきい値・ノード数のみ
+    c1, c2, c3 = st.columns([1,1,1])
     with c1:
-        y_from, y_to = st.slider("対象年（範囲）", min_value=ymin_all, max_value=ymax_all, value=(ymin_all, ymax_all), key="obj_net_year")
-    with c2:
         mode = st.selectbox("ネットワークの種類", ["対象物のみ", "研究タイプのみ", "対象物×研究タイプ"], index=0, key="obj_net_mode")
+    with c2:
+        min_edge = st.number_input("最低共起数（同時出現）", min_value=1, max_value=50, value=3, step=1, key="obj_net_minw")
     with c3:
-        min_edge = st.number_input("エッジ最小回数 (w≥)", min_value=1, max_value=50, value=3, step=1, key="obj_net_minw")
-    with c4:
-        topN = st.number_input("上位のノード数（上限）", min_value=30, max_value=300, value=120, step=10, key="obj_net_topn")
+        topN = st.number_input("表示するノード数（多い順）", min_value=30, max_value=300, value=120, step=10, key="obj_net_topn")
 
-    # 年だけ当てたデータから候補を抽出
-    use_year = _apply_filters(df, y_from, y_to, [], [])
-    tg_all = sorted({t for v in use_year.get("対象物_top3", pd.Series(dtype=str)).fillna("")
-                    for t in split_multi(v)})
-    tp_all = sorted({t for v in use_year.get("研究タイプ_top3", pd.Series(dtype=str)).fillna("")
-                    for t in split_multi(v)})
-
-    # ★ 表示順を固定
-    tg_all = _order_options(tg_all, TARGET_ORDER)
-    tp_all = _order_options(tp_all, TYPE_ORDER)
-
-    c5, c6 = st.columns([1, 1])
-    with c5:
-        tg_needles = st.multiselect("対象物で絞り込み", tg_all, default=[], key="obj_net_tg_sel")
-    with c6:
-        tp_needles = st.multiselect("研究タイプで絞り込み", tp_all, default=[], key="obj_net_tp_sel")
-
-    use = _apply_filters(df, y_from, y_to, tg_needles, tp_needles)
-
-    # ---- キャッシュキー ----
-    cache_key = f"objnet|{y_from}-{y_to}|{mode}|min{min_edge}|top{topN}|tg{','.join(tg_needles)}|tp{','.join(tp_needles)}"
-
-    # 1) エッジ構築（重いので永続キャッシュ）
-    edges = None
-    if HAS_DISK_CACHE:
-        path_edges = cache_csv_path("obj_net_edges", cache_key)
-        cached = load_csv_if_exists(path_edges)
-        if cached is not None:
-            edges = cached
-
-    if edges is None:
-        edges = _build_cooccur_edges(use, mode, int(min_edge))
-        # 上位ノード制限：出現多いノードを残す
-        if not edges.empty and int(topN) > 0:
-            deg = pd.concat([edges.groupby("src")["weight"].sum(),
-                             edges.groupby("dst")["weight"].sum()], axis=1).fillna(0).sum(axis=1)
-            keep_nodes = set(deg.sort_values(ascending=False).head(int(topN)).index.tolist())
-            edges = edges[edges["src"].isin(keep_nodes) & edges["dst"].isin(keep_nodes)].reset_index(drop=True)
-        if HAS_DISK_CACHE:
-            save_csv(edges, path_edges)
+    use = df_use
+    edges = _build_cooccur_edges(use, mode, int(min_edge))
+    if not edges.empty and int(topN) > 0:
+        deg = pd.concat([edges.groupby("src")["weight"].sum(),
+                         edges.groupby("dst")["weight"].sum()], axis=1).fillna(0).sum(axis=1)
+        keep_nodes = set(deg.sort_values(ascending=False).head(int(topN)).index.tolist())
+        edges = edges[edges["src"].isin(keep_nodes) & edges["dst"].isin(keep_nodes)].reset_index(drop=True)
 
     st.caption(f"エッジ数: {len(edges)}")
     st.dataframe(edges.head(200), use_container_width=True, hide_index=True)
@@ -579,6 +551,15 @@ def render_targettype_tab(df: pd.DataFrame) -> None:
         unsafe_allow_html=True,
     )
 
+    # 共通フィルタバー
+    _flt_res = render_filter_bar(
+        df,
+        key_prefix="obj",
+        target_order=TARGET_ORDER,
+        type_order=TYPE_ORDER,
+    )
+    df_use = _df_from_filter_result(_flt_res, df)
+
     tab1, tab2, tab3 = st.tabs([
         "① 構成比・クロス集計",
         "② 共起ネットワーク",
@@ -586,44 +567,13 @@ def render_targettype_tab(df: pd.DataFrame) -> None:
     ])
 
     with tab1:
-        # --- 共通フィルタ（このサブタブ全体に適用） ---
-        st.markdown(
-            "<style>.sticky-filters{position:sticky;top:0;z-index:999;background:var(--background-color,#ffffff);padding:0.25rem 0 0.35rem;border-bottom:1px solid #eee;}</style>",
-            unsafe_allow_html=True
-        )
-        ymin_all, ymax_all = _year_min_max(df)
-        st.markdown('<div class="sticky-filters">', unsafe_allow_html=True)
-        c1, c2, c3 = st.columns([2, 1, 1])
-        with c1:
-            y_from, y_to = st.slider(
-                "対象年（範囲）",
-                min_value=ymin_all, max_value=ymax_all,
-                value=(ymin_all, ymax_all),
-                key="obj_overview_year",
-            )
-        df_year = _apply_filters(df, y_from, y_to, [], [])
-        tg_all = sorted({t for v in df_year.get("対象物_top3", pd.Series(dtype=str)).fillna("") for t in split_multi(v)})
-        tp_all = sorted({t for v in df_year.get("研究タイプ_top3", pd.Series(dtype=str)).fillna("") for t in split_multi(v)})
-        tg_all = _order_options(tg_all, TARGET_ORDER)
-        tp_all = _order_options(tp_all, TYPE_ORDER)
-        with c2:
-            tg_needles = st.multiselect("対象物で絞り込み", options=tg_all, default=[], key="obj_overview_tg")
-        with c3:
-            tp_needles = st.multiselect("研究タイプで絞り込み", options=tp_all, default=[], key="obj_overview_tp")
-        st.markdown('</div>', unsafe_allow_html=True)
-
-        # 共通フィルタ適用
-        use = _apply_filters(df, y_from, y_to, tg_needles, tp_needles)
-
-        # 上段：対象物/研究タイプの並列バー
-        _render_distribution_block(use)
-
-        # 下段：クロスヒートマップ
+        # 上段：対象物/研究タイプの並列バー（共通フィルタ適用済みの df_use をそのまま使用）
+        _render_distribution_block(df_use)
         st.divider()
-        _render_cross_block(use)
+        _render_cross_block(df_use)
 
     with tab2:
-        _render_cooccurrence_block(df)
+        _render_cooccurrence_block(df_use)
 
     with tab3:
-        _render_trend_block(df)
+        _render_trend_block(df_use)

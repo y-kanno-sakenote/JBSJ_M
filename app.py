@@ -373,11 +373,11 @@ with tab_search:
     with row1_tg:
         raw_targets = {t for v in df.get("対象物_top3", pd.Series(dtype=str)).fillna("") for t in split_multi(v)}
         targets_all = order_by_template(list(raw_targets), TARGET_ORDER)
-        targets_sel = st.multiselect("対象物（複数選択／部分一致）", targets_all, default=[])
+        targets_sel = st.multiselect("対象物で絞り込み", targets_all, default=[])
     with row1_tp:
         raw_types = {t for v in df.get("研究タイプ_top3", pd.Series(dtype=str)).fillna("") for t in split_multi(v)}
         types_all = order_by_template(list(raw_types), TYPE_ORDER)
-        types_sel = st.multiselect("研究タイプ（複数選択／部分一致）", types_all, default=[])
+        types_sel = st.multiselect("研究タイプで絞り込み", types_all, default=[])
 
     # -------------------- 検索フィルタ（2段目：著者 + イニシャルラジオ横並び） --------------------
     row2_author, row2_radio = st.columns([1.0, 2.0])
@@ -643,7 +643,7 @@ with tab_search:
 
     # -------------------- タグでお気に入りを絞り込み（AND/OR） --------------------
     with st.expander("🔎 タグでお気に入りを絞り込み（AND/OR）", expanded=False):
-        tag_query = st.text_input("タグ検索（カンマ/空白区切り）", key="tag_query")
+        tag_query = st.text_input("タグ検索（空白/カンマで複数可）", key="tag_query")
         tag_mode = st.radio("一致条件", ["OR", "AND"], index=0, horizontal=True, key="tag_mode")
 
         fav_disp_for_filter = fav_disp_full[fav_disp_full["_row_id"].isin(st.session_state.favs)].copy()
