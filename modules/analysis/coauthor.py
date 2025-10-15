@@ -646,10 +646,9 @@ def render_coauthor_tab(df: pd.DataFrame, use_disk_cache: bool = False):
                 _render_copy_grid(rank["著者"].tolist())
 
             with st.expander("🕸️ ネットワークを可視化", expanded=False):
-                st.caption("共著関係をインタラクティブに可視化します（networkx / pyvis が必要）。")
-                top_only = st.toggle("上位ランキングの周辺だけ表示（軽量）", value=True, key="res_net_toponly")
+                top_only = st.toggle("上位ランキングの周辺だけ表示", value=True, key="res_net_toponly")
                 top_nodes = rank["著者"].tolist() if top_only else None
-                if st.button("🌐 ネットワークを描画する", key="res_net_draw"):
+                if st.button("🌐 描画する", key="res_net_draw"):
                     _draw_network(edges, top_nodes=top_nodes, min_weight=int(min_w), height_px=700)
 
     # ===== ③ トレンド分析（論文数の年次推移） =====

@@ -527,9 +527,9 @@ def _render_cooccurrence_block(df: pd.DataFrame) -> None:
 
     c5, c6 = st.columns([1, 1])
     with c5:
-        tg_needles = st.multiselect("対象物で絞り込み（選択）", tg_all, default=[], key="obj_net_tg_sel")
+        tg_needles = st.multiselect("対象物で絞り込み", tg_all, default=[], key="obj_net_tg_sel")
     with c6:
-        tp_needles = st.multiselect("研究タイプで絞り込み（選択）", tp_all, default=[], key="obj_net_tp_sel")
+        tp_needles = st.multiselect("研究タイプで絞り込み", tp_all, default=[], key="obj_net_tp_sel")
 
     use = _apply_filters(df, y_from, y_to, tg_needles, tp_needles)
 
@@ -559,7 +559,7 @@ def _render_cooccurrence_block(df: pd.DataFrame) -> None:
     st.dataframe(edges.head(200), use_container_width=True, hide_index=True)
 
     # 2) ネットワーク描画
-    with st.expander("🕸️ ネットワークを描画（PyVis / 任意依存）", expanded=False):
+    with st.expander("🕸️ ネットワークを可視化", expanded=False):
         if HAS_PYVIS and HAS_NX:
             if st.button("🌐 描画する", key="obj_net_draw"):
                 _draw_pyvis_from_edges(edges, height_px=680)

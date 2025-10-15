@@ -462,11 +462,11 @@ def _render_freq_block(df: pd.DataFrame) -> None:
 
     # グラフ
     if HAS_PX:
-        fig = px.bar(freq_df, x="キーワード", y="件数", text_auto=True, title="頻出キーワード（上位）")
+        fig = px.bar(freq_df, x="キーワード", y="件数", text_auto=True, title="頻出キーワード")
         fig.update_layout(margin=dict(l=10,r=10,t=40,b=10), height=420)
         st.plotly_chart(fig, use_container_width=True)
         # クイックコピー（TopN キーワード）
-        with st.expander("📋 キーワードをすぐコピー（補助機能）", expanded=False):
+        with st.expander("📋 キーワードをすぐコピー", expanded=False):
             try:
                 _copy_items = freq_df["キーワード"].astype(str).tolist()
             except Exception:
@@ -475,7 +475,7 @@ def _render_freq_block(df: pd.DataFrame) -> None:
     else:
         st.bar_chart(freq_df.set_index("キーワード")["件数"])
         # クイックコピー（TopN キーワード）
-        with st.expander("📋 キーワードをすぐコピー（補助機能）", expanded=False):
+        with st.expander("📋 キーワードをすぐコピー", expanded=False):
             try:
                 _copy_items = freq_df["キーワード"].astype(str).tolist()
             except Exception:
@@ -483,7 +483,7 @@ def _render_freq_block(df: pd.DataFrame) -> None:
             _render_copy_grid(_copy_items)
 
     # WordCloud（任意・ボタン生成）
-    with st.expander("☁ WordCloud（任意）", expanded=False):
+    with st.expander("☁ WordCloud", expanded=False):
         if HAS_WC:
             if st.button("生成する", key="kw_wc_btn"):
                 textfreq = {row["キーワード"]: int(row["件数"]) for _, row in freq_df.iterrows()}
@@ -554,14 +554,14 @@ def _render_cooccur_block(df: pd.DataFrame) -> None:
     st.dataframe(edges.head(200), use_container_width=True, hide_index=True)
 
     # クイックコピー（ノード名）
-    with st.expander("📋 ノード名をすぐコピー（補助機能）", expanded=False):
+    with st.expander("📋 ノード名をすぐコピー", expanded=False):
         if not edges.empty:
             _nodes = sorted(set(edges["src"].astype(str)).union(set(edges["dst"].astype(str))))
         else:
             _nodes = []
         _render_copy_grid(_nodes)
 
-    with st.expander("🕸️ ネットワークを描画（PyVis / 任意依存）", expanded=False):
+    with st.expander("🕸️ ネットワークを可視化", expanded=False):
         if HAS_PYVIS and HAS_NX:
             if st.button("🌐 描画する", key="kw_co_draw"):
                 _draw_pyvis_from_edges(edges, height_px=680)
@@ -617,13 +617,13 @@ def _render_trend_block(df: pd.DataFrame) -> None:
         fig.update_layout(height=520, margin=dict(l=10,r=10,t=30,b=10))
         st.plotly_chart(fig, use_container_width=True)
         # クイックコピー（プロット対象のキーワード＝凡例と一致）
-        with st.expander("📋 キーワードをすぐコピー（補助機能）", expanded=False):
+        with st.expander("📋 キーワードをすぐコピー", expanded=False):
             _legend_items = [c for c in piv.columns if c != "発行年"] if hasattr(piv, 'columns') else []
             _render_copy_grid([str(x) for x in _legend_items])
     else:
         st.line_chart(piv)
         # クイックコピー（プロット対象のキーワード＝凡例と一致）
-        with st.expander("📋 キーワードをすぐコピー（補助機能）", expanded=False):
+        with st.expander("📋 キーワードをすぐコピー", expanded=False):
             _legend_items = [c for c in piv.columns if c != "発行年"] if hasattr(piv, 'columns') else []
             _render_copy_grid([str(x) for x in _legend_items])
         
