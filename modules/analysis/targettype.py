@@ -321,33 +321,48 @@ def _yearly_counts(df: pd.DataFrame, col: str) -> pd.DataFrame:
     return c.sort_values(["発行年", "count"], ascending=[True, False]).reset_index(drop=True)
 
 def _render_trend_block(df: pd.DataFrame) -> None:
-    # 年スライダーなし、dfは既にフィルタ済み
-    c1, c2 = st.columns([1, 1])
+    # 1行（2:6:2）に「対象」「表示する項目」「移動平均」を配置
+    c1, c2, c3 = st.columns([1.5, 8, 1.5])
+
+    # 対象（左）
     with c1:
-        target_mode = st.selectbox("対象", ["対象物_top3","研究タイプ_top3"], index=0, key="obj_trend_mode")
-    with c2:
-        ma = st.number_input("移動平均（年）", min_value=1, max_value=7, value=1, step=1, key="obj_trend_ma")
+        target_mode = st.selectbox(
+            "対象",
+            ["対象物_top3", "研究タイプ_top3"],
+            index=0,
+            key="obj_trend_mode",
+            # 表示のみ「対象物」「研究タイプ」にする（内部値は *_top3 を維持）
+            format_func=lambda x: "対象物" if x == "対象物_top3" else ("研究タイプ" if x == "研究タイプ_top3" else str(x))
+        )
 
     use = df  # 既にフィルタ済み
 
-    # 生の候補を抽出
+    # 候補抽出と順序固定（中央の multiselect で使う）
     all_items_raw = sorted({
         t for v in use.get(target_mode, pd.Series(dtype=str)).fillna("")
         for t in split_multi(v)
     })
-
-    # ★ 表示順を固定（対象物/研究タイプで順序を切替）
     if target_mode == "対象物_top3":
         all_items = _order_options(all_items_raw, TARGET_ORDER)
-    else:  # "研究タイプ_top3"
+    else:
         all_items = _order_options(all_items_raw, TYPE_ORDER)
 
-    sel = st.multiselect(
-        "表示する項目（複数可）",
-        all_items[:1000],
-        default=all_items[: min(0, len(all_items))],
-        key="obj_trend_items",
-    )
+    # 表示する項目（中央）
+    with c2:
+        sel = st.multiselect(
+            "表示する項目（複数可）",
+            options=all_items[:1000],
+            default=all_items[: min(0, len(all_items))],  # 既存仕様：初期は空
+            key="obj_trend_items",
+        )
+
+    # 移動平均（右）
+    with c3:
+        ma = st.number_input(
+            "移動平均（年）",
+            min_value=1, max_value=7, value=1, step=1,
+            key="obj_trend_ma"
+        )
 
     yearly = _yearly_counts(use, target_mode)
     if yearly.empty:

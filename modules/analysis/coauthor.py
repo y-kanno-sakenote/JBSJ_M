@@ -718,23 +718,42 @@ def render_coauthor_tab(df: pd.DataFrame, use_disk_cache: bool = False):
 
     # ===== ③ トレンド分析（論文数の年次推移） =====
     with tab_trend:
-        c1, c2 = st.columns([1,1])
-        with c1:
-            ma = st.number_input("移動平均（年）", min_value=1, max_value=7, value=1, step=1, key="res_trend_ma")
-        with c2:
-            max_auth = st.number_input("初期表示の著者数（上位）", min_value=3, max_value=30, value=12, step=1, key="res_trend_initn")
-
         use = df_use
         yearly = _yearly_author_counts(use)
         if yearly.empty:
             st.info("データがありません。")
             return
 
-        # 著者選択（出現総数の多い順に初期選択）
+        # 著者候補（出現総数の多い順）
         tot = yearly.groupby("著者")["count"].sum().sort_values(ascending=False)
         options = tot.index.tolist()
+
+        # --- 詳細フィルターを1列で並べる：初期表示の著者数 → 表示する著者 → 移動平均 ---
+        col_a, col_b, col_c = st.columns([1, 7, 1])
+
+        with col_a:
+            max_auth = st.number_input(
+                "初期表示数（上位）",
+                min_value=3, max_value=30, value=10, step=1,
+                key="res_trend_initn"
+            )
+
         default_sel = options[: int(max_auth)]
-        sel = st.multiselect("表示する著者（複数可）", options, default=default_sel, key="res_trend_authors")
+
+        with col_b:
+            sel = st.multiselect(
+                "表示する著者（複数可）",
+                options,
+                default=default_sel,
+                key="res_trend_authors"
+            )
+
+        with col_c:
+            ma = st.number_input(
+                "移動平均（年）",
+                min_value=1, max_value=7, value=1, step=1,
+                key="res_trend_ma"
+            )
 
         piv = yearly.pivot_table(index="発行年", columns="著者", values="count", aggfunc="sum").fillna(0).sort_index()
         if sel:
