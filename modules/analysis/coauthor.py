@@ -18,12 +18,15 @@ from typing import List, Tuple
 import pandas as pd
 import streamlit as st
 
-# ---- サブタブ（経年変化）の相対import：存在しない場合も落とさない ----
-try:
-    from .coauthor_temporal import render_coauthor_temporal_subtab  # 同ディレクトリ想定
-    HAS_TEMPORAL = True
-except Exception:
-    HAS_TEMPORAL = False
+# ========= 年レンジユーティリティ =========
+@st.cache_data(ttl=600, show_spinner=False)
+def _year_min_max(df: pd.DataFrame) -> Tuple[int, int]:
+    if "発行年" not in df.columns:
+        return (1980, 2025)
+    y = pd.to_numeric(df["発行年"], errors="coerce")
+    if y.notna().any():
+        return (int(y.min()), int(y.max()))
+    return (1980, 2025)
 
 # --- Optional deps ---
 try:
@@ -184,6 +187,53 @@ def centrality_from_edges(edges: pd.DataFrame, metric: str = "degree") -> pd.Dat
     out = pd.merge(cen_df, deg_simple, on="著者", how="left")
     out["共著数"] = out["共著数"].fillna(0).astype(float)
     return out[["著者", "共著数", "つながりスコア"]].sort_values("つながりスコア", ascending=False).reset_index(drop=True)
+
+
+# ========= 著者カウント系ユーティリティ =========
+@st.cache_data(ttl=600, show_spinner=False)
+def _apply_filters_basic(df: pd.DataFrame, y_from: int, y_to: int,
+                         targets: List[str], types: List[str]) -> pd.DataFrame:
+    use = df.copy()
+    if "発行年" in use.columns:
+        y = pd.to_numeric(use["発行年"], errors="coerce")
+        use = use[(y >= y_from) & (y <= y_to) | y.isna()]
+    if targets and "対象物_top3" in use.columns:
+        use = use[col_contains_any(use["対象物_top3"], targets)]
+    if types and "研究タイプ_top3" in use.columns:
+        use = use[col_contains_any(use["研究タイプ_top3"], types)]
+    return use
+
+@st.cache_data(ttl=600, show_spinner=False)
+def _author_total_counts(df: pd.DataFrame) -> pd.Series:
+    """著者別の論文件数（重複同一論文内は1カウント）"""
+    if "著者" not in df.columns:
+        return pd.Series(dtype=int)
+    bags = []
+    for a in df["著者"].fillna(""):
+        names = list(dict.fromkeys(split_authors(a)))
+        bags += names
+    if not bags:
+        return pd.Series(dtype=int)
+    s = pd.Series(bags, dtype="object")
+    return s.value_counts().sort_values(ascending=False)
+
+@st.cache_data(ttl=600, show_spinner=False)
+def _yearly_author_counts(df: pd.DataFrame) -> pd.DataFrame:
+    """年×著者の件数（同一論文内の重複は1としてカウント）"""
+    if "著者" not in df.columns or "発行年" not in df.columns:
+        return pd.DataFrame(columns=["発行年", "著者", "count"])
+    rows = []
+    for _, r in df.iterrows():
+        y = pd.to_numeric(r.get("発行年"), errors="coerce")
+        if pd.isna(y):
+            continue
+        names = list(dict.fromkeys(split_authors(r.get("著者", ""))))
+        for n in names:
+            rows.append((int(y), n))
+    if not rows:
+        return pd.DataFrame(columns=["発行年", "著者", "count"])
+    c = pd.DataFrame(rows, columns=["発行年","著者"]).value_counts().reset_index(name="count")
+    return c.sort_values(["発行年","count"], ascending=[True, False]).reset_index(drop=True)
 
 
 # ========= ネットワーク描画（PyVis） =========
@@ -356,53 +406,69 @@ def _render_copy_grid(authors: List[str]) -> None:
         """
     html += "</div>"
     import streamlit.components.v1 as components
-    components.html(html, height=220, scrolling=True)
+    components.html(html, height=140, scrolling=True)
 
 
-# ========= UI構築（サブタブ対応） =========
+# ========= UI構築 =========
 def render_coauthor_tab(df: pd.DataFrame, use_disk_cache: bool = False):
-    st.markdown("## 👥 研究者のつながり分析（共著ネットワーク）")
-    st.caption("共著関係が多いほどネットワークの中心に位置しやすく、橋渡し役や影響力の強さも指標から読み取れます。")
+    # ===== タブ見出し =====
+    st.markdown("## 👨‍🔬 研究者")
+    st.caption("著者別の論文数・共著ネットワーク・トレンド（年次推移）を確認できます。")
 
-    if df is None or "著者" not in df.columns:
+    if df is None or ("著者" not in df.columns):
         st.warning("著者データが見つかりません。")
         return
 
-    # タブ構成（経年変化サブタブはモジュールがあるときだけ）
-    if HAS_TEMPORAL:
-        tab_main, tab_temp = st.tabs(["🔝 ランキング・ネットワーク", "⏳ 経年変化"])
-    else:
-        (tab_main,) = st.tabs(["🔝 ランキング・ネットワーク"])
+    # 年レンジ（全タブ共通の初期値に使用）
+    ymin, ymax = _year_min_max(df)
 
-    # ===== メインタブ =====
-    with tab_main:
-        # 年範囲
-        if "発行年" in df.columns:
-            y = pd.to_numeric(df["発行年"], errors="coerce")
-            if y.notna().any():
-                ymin, ymax = int(y.min()), int(y.max())
-            else:
-                ymin, ymax = 1980, 2025
-        else:
-            ymin, ymax = 1980, 2025
+    # サブタブ構成：①論文数 ②共著ネットワーク ③トレンド分析
+    tab_count, tab_network, tab_trend = st.tabs(["📚 論文数", "🕸️ 共著ネットワーク", "📈 トレンド分析"])
 
-        # フィルタ（選択式）
+    # ===== ① 論文数 =====
+    with tab_count:
+        c1, c2, c3, c4 = st.columns([1,1,1,1])
+        with c1:
+            y_from, y_to = st.slider("対象年（範囲）", min_value=ymin, max_value=ymax, value=(ymin, ymax), key="res_cnt_year")
+        # 選択肢抽出＆順序固定
         targets_all = sorted({w for v in df.get("対象物_top3", pd.Series(dtype=str)).fillna("") for w in split_multi(v)})
         types_all   = sorted({w for v in df.get("研究タイプ_top3", pd.Series(dtype=str)).fillna("") for w in split_multi(v)})
-
-        # ★ 並び順を ORDER に合わせる（機能変更なし・順序のみ統一）
         targets_all = _sort_with_order(list(targets_all), TARGET_ORDER)
         types_all   = _sort_with_order(list(types_all), TYPE_ORDER)
-
-        c1, c2, c3= st.columns([1, 1, 1])
-        with c1:
-            year_from, year_to = st.slider("対象年（範囲）", min_value=ymin, max_value=ymax, value=(ymin, ymax))
         with c2:
-            tg_sel = st.multiselect("対象物で絞り込み", options=targets_all, default=[])
+            tg_sel = st.multiselect("対象物で絞り込み", options=targets_all, default=[], key="res_cnt_tg")
         with c3:
-            tp_sel = st.multiselect("研究タイプで絞り込み", options=types_all, default=[])
+            tp_sel = st.multiselect("研究タイプで絞り込み", options=types_all, default=[], key="res_cnt_tp")
+        with c4:
+            top_n = st.number_input("ランキング件数", min_value=5, max_value=200, value=50, step=5, key="res_cnt_topn")
 
-        c4, c5, c6 = st.columns([1, 1, 1])
+        use = _apply_filters_basic(df, y_from, y_to, tg_sel, tp_sel)
+        s = _author_total_counts(use).head(int(top_n))
+        if s.empty:
+            st.info("条件に合うデータがありません。")
+        else:
+            rank = s.reset_index()
+            rank.columns = ["著者", "論文数"]
+            st.dataframe(rank, use_container_width=True, hide_index=True)
+            with st.expander("📋 著者名をすぐコピー（補助機能）", expanded=False):
+                _render_copy_grid(rank["著者"].tolist())
+
+    # ===== ② 共著ネットワーク（既存ロジックをそのまま） =====
+    with tab_network:
+        # フィルタ（選択式）
+        c1, c2, c3 = st.columns([1,1,1])
+        with c1:
+            year_from, year_to = st.slider("対象年（範囲）", min_value=ymin, max_value=ymax, value=(ymin, ymax), key="res_net_year")
+        targets_all = sorted({w for v in df.get("対象物_top3", pd.Series(dtype=str)).fillna("") for w in split_multi(v)})
+        types_all   = sorted({w for v in df.get("研究タイプ_top3", pd.Series(dtype=str)).fillna("") for w in split_multi(v)})
+        targets_all = _sort_with_order(list(targets_all), TARGET_ORDER)
+        types_all   = _sort_with_order(list(types_all), TYPE_ORDER)
+        with c2:
+            tg_sel = st.multiselect("対象物で絞り込み", options=targets_all, default=[], key="res_net_tg")
+        with c3:
+            tp_sel = st.multiselect("研究タイプで絞り込み", options=types_all, default=[], key="res_net_tp")
+
+        c4, c5, c6 = st.columns([1,1,1])
         with c4:
             metric = st.selectbox(
                 "中心性指標",
@@ -414,13 +480,14 @@ def render_coauthor_tab(df: pd.DataFrame, use_disk_cache: bool = False):
                     "eigenvector": "固有ベクトル（影響力）",
                 }[x],
                 help="networkx が未導入の場合は簡易スコア（共著数の合計）で代替します。",
+                key="res_net_metric",
             )
         with c5:
-            top_n = st.number_input("ランキング件数", min_value=5, max_value=100, value=30, step=5)
+            top_n = st.number_input("ランキング件数", min_value=5, max_value=100, value=30, step=5, key="res_net_topn")
         with c6:
-            min_w = st.number_input("描画する最小共著回数 (w≥)", min_value=1, max_value=20, value=2, step=1)
+            min_w = st.number_input("描画する最小共著回数 (w≥)", min_value=1, max_value=20, value=2, step=1, key="res_net_minw")
 
-        # ---- キャッシュキー（オプション） ----
+        # エッジ構築（ディスクキャッシュは従来どおり利用可）
         cache_key = f"coauth_edges|{year_from}-{year_to}|tg{','.join(tg_sel)}|tp{','.join(tp_sel)}"
         edges = None
         if use_disk_cache and HAS_DISK_CACHE:
@@ -428,7 +495,6 @@ def render_coauthor_tab(df: pd.DataFrame, use_disk_cache: bool = False):
             cached = load_csv_if_exists(path)
             if cached is not None:
                 edges = cached
-
         if edges is None:
             edges = build_coauthor_edges(df, year_from, year_to, tg_sel, tp_sel)
             if use_disk_cache and HAS_DISK_CACHE:
@@ -436,27 +502,154 @@ def render_coauthor_tab(df: pd.DataFrame, use_disk_cache: bool = False):
 
         if edges.empty:
             st.info("共著関係が見つかりませんでした。条件を調整してください。")
+        else:
+            st.markdown("### 🔝 研究者のつながりランキング")
+            rank = centrality_from_edges(edges, metric=metric).head(int(top_n))
+            st.dataframe(rank, use_container_width=True, hide_index=True)
+            st.caption("※ 指標の意味：次数=つながりの数 / 媒介=橋渡し度 / 固有ベクトル=影響力（有力者との結び付き）")
+            with st.expander("📋 著者名をすぐコピー（補助機能）", expanded=False):
+                _render_copy_grid(rank["著者"].tolist())
+
+            with st.expander("🕸️ ネットワークを可視化（任意・依存あり）", expanded=False):
+                st.caption("共著関係をインタラクティブに可視化します（networkx / pyvis が必要）。")
+                top_only = st.toggle("上位ランキングの周辺だけ表示（軽量）", value=True, key="res_net_toponly")
+                top_nodes = rank["著者"].tolist() if top_only else None
+                if st.button("🌐 ネットワークを描画する", key="res_net_draw"):
+                    _draw_network(edges, top_nodes=top_nodes, min_weight=int(min_w), height_px=700)
+
+    # ===== ③ トレンド分析（論文数の年次推移） =====
+    with tab_trend:
+        c1, c2, c3 = st.columns([1,1,1])
+        with c1:
+            y_from, y_to = st.slider("対象年（範囲）", min_value=ymin, max_value=ymax, value=(ymin, ymax), key="res_trend_year")
+        with c2:
+            ma = st.number_input("移動平均（年）", min_value=1, max_value=7, value=1, step=1, key="res_trend_ma")
+        with c3:
+            max_auth = st.number_input("初期表示の著者数（上位）", min_value=3, max_value=30, value=12, step=1, key="res_trend_initn")
+
+        # 追加フィルタ（対象物・研究タイプ）
+        targets_all = sorted({w for v in df.get("対象物_top3", pd.Series(dtype=str)).fillna("") for w in split_multi(v)})
+        types_all   = sorted({w for v in df.get("研究タイプ_top3", pd.Series(dtype=str)).fillna("") for w in split_multi(v)})
+        targets_all = _sort_with_order(list(targets_all), TARGET_ORDER)
+        types_all   = _sort_with_order(list(types_all), TYPE_ORDER)
+
+        c4, c5 = st.columns([1,1])
+        with c4:
+            tg_sel = st.multiselect("対象物で絞り込み（任意）", options=targets_all, default=[], key="res_trend_tg")
+        with c5:
+            tp_sel = st.multiselect("研究タイプで絞り込み（任意）", options=types_all, default=[], key="res_trend_tp")
+
+        use = _apply_filters_basic(df, y_from, y_to, tg_sel, tp_sel)
+        yearly = _yearly_author_counts(use)
+        if yearly.empty:
+            st.info("データがありません。")
             return
 
-        # --- スコア表示（表の仕様は維持） ---
-        st.markdown("### 🔝 研究者のつながりランキング")
-        rank = centrality_from_edges(edges, metric=metric).head(int(top_n))
-        st.dataframe(rank, use_container_width=True, hide_index=True)
-        st.caption("※ 指標の意味：次数=つながりの数 / 媒介=橋渡し度 / 固有ベクトル=影響力（有力者との結び付き）")
+        # 著者選択（出現総数の多い順に初期選択）
+        tot = yearly.groupby("著者")["count"].sum().sort_values(ascending=False)
+        options = tot.index.tolist()
+        default_sel = options[: int(max_auth)]
+        sel = st.multiselect("表示する著者（複数可）", options, default=default_sel, key="res_trend_authors")
 
-        # --- 補助：著者名のクイックコピー（別枠・表は崩さない） ---
-        with st.expander("📋 著者名をすぐコピー（表はそのまま・補助機能）", expanded=False):
-            _render_copy_grid(rank["著者"].tolist())
+        piv = yearly.pivot_table(index="発行年", columns="著者", values="count", aggfunc="sum").fillna(0).sort_index()
+        if sel:
+            piv = piv[[c for c in sel if c in piv.columns]]
 
-        # --- 可視化（遅延描画） ---
-        with st.expander("🕸️ ネットワークを可視化（任意・依存あり）", expanded=False):
-            st.caption("共著関係をインタラクティブに可視化します（networkx / pyvis が必要）。")
-            top_only = st.toggle("上位ランキングの周辺だけ表示（軽量）", value=True)
-            top_nodes = rank["著者"].tolist() if top_only else None
-            if st.button("🌐 ネットワークを描画する"):
-                _draw_network(edges, top_nodes=top_nodes, min_weight=int(min_w), height_px=700)
+        if piv.shape[1] == 0:
+            st.info("表示対象がありません。左のリストから1つ以上選んでください。")
+            return
 
-    # ===== サブタブ：経年変化 =====
-    if HAS_TEMPORAL:
-        with tab_temp:
-            render_coauthor_temporal_subtab(df, use_disk_cache=use_disk_cache)
+        if int(ma) > 1:
+            piv = piv.rolling(window=int(ma), min_periods=1).mean()
+
+        # --- ▼▼▼ ここから新規UI（表示指標/凡例順序）挿入 ▼▼▼ ---
+        # 表示指標: 件数 / シェア(%)
+        metric_mode = st.radio(
+            "表示指標", ["件数", "シェア(%)"], horizontal=True, key="res_trend_metric",
+            help="シェア(%)を選ぶと、各年内での著者の占有率を表示します。"
+        )
+
+
+        # シェア化
+        if metric_mode == "シェア(%)":
+            row_sums = piv.sum(axis=1)
+            piv = piv.div(row_sums, axis=0).fillna(0) * 100
+
+        # 凡例順序を直近年値で並べ替え（デフォルトで常時適用）
+        if not piv.empty:
+            try:
+                last_row = piv.iloc[-1]  # 最終行（直近年）
+            except Exception:
+                last_row = piv.mean(axis=0, numeric_only=True)
+            order = list(last_row.sort_values(ascending=False).index)
+            piv = piv.loc[:, [c for c in order if c in piv.columns]]
+        # --- ▲▲▲ ここまで挿入 --- 
+
+        # ⭐ 直近上昇ハイライト（トグルはグラフの“下”に移動）
+        hi_key = "res_trend_hi"
+        hi_on = bool(st.session_state.get(hi_key, False))
+
+        # 凡例名マップ（デフォルトは同名）
+        legend_map = {c: c for c in piv.columns}
+        highlighted = []
+
+        if hi_on and not piv.empty:
+            years = list(piv.index)
+            # 直近3年とその直前3年（不足時はある分で計算）
+            recent = [y for y in years if y <= y_to][-3:]
+            prev   = [y for y in years if y < (recent[0] if recent else y_to)][-3:]
+
+            def growth_for(col: str) -> float:
+                r = float(piv.loc[recent, col].mean()) if recent else 0.0
+                p = float(piv.loc[prev,   col].mean()) if prev else 0.0
+                return (r + 1.0) / (p + 1.0) - 1.0
+
+            scores = {c: growth_for(c) for c in piv.columns}
+            # 上位5名に⭐付与
+            top_names = [k for k, _ in sorted(scores.items(), key=lambda kv: (kv[1] if kv[1] == kv[1] else -1e9), reverse=True)[:5]]
+            for n in top_names:
+                legend_map[n] = f"⭐ {n}"
+            highlighted = top_names
+
+        # グラフの“下”で表示するための例文を先に用意
+        highlight_example_text = ""
+        if hi_on and highlighted:
+            highlight_example_text = "⭐ 直近上昇ハイライト: " + ", ".join(legend_map[n] for n in highlighted)
+
+        try:
+            import plotly.express as px
+            _sel_key = ",".join(sel) if sel else "__ALL__"
+            _uniq_key = f"res_trend_plot|{y_from}-{y_to}|{_sel_key}|ma{ma}|hi{int(hi_on)}|m{metric_mode}"
+            plot_df = piv.reset_index().melt(id_vars="発行年", var_name="著者", value_name="値")
+            # 凡例表示名を差し替え（⭐ 付与）
+            plot_df["著者"] = plot_df["著者"].map(legend_map).fillna(plot_df["著者"])
+            y_axis_title = metric_mode if metric_mode == "件数" else "シェア(%)"
+            fig = px.line(plot_df, x="発行年", y="値", color="著者", markers=True)
+            fig.update_layout(height=520, margin=dict(l=10,r=10,t=30,b=10), legend_title_text="著者", yaxis_title=y_axis_title)
+            st.plotly_chart(fig, use_container_width=True, key=_uniq_key)
+        except Exception:
+            # フォールバック（凡例名の差し替えは不可だがグラフは表示）
+            st.line_chart(piv)
+        # グラフの“下”にトグルと例を横並び表示（標準ウィジェットのみ・デフォルト形）
+        col_tgl, col_example = st.columns([0.22, 0.78])
+        with col_tgl:
+            hi_on_new = st.toggle(
+                "⭐ 直近上昇をハイライト",
+                value=hi_on,
+                key=hi_key,
+                help="直近3年平均とその前3年平均を比較して、増加の大きい著者に⭐を付けます。"
+            )
+            # ※ 値は Streamlit が管理。代入は不要。
+        with col_example:
+            # 少し下にずらすための薄いスペーサ
+            st.markdown("<div style='height:0px'></div>", unsafe_allow_html=True)
+            if hi_on_new and highlight_example_text:
+                st.caption(highlight_example_text)
+
+        # ▼ 著者名コピー（補助機能）：表示中の著者だけを並べる
+        with st.expander("📋 著者名をすぐコピー（補助機能）", expanded=False):
+            try:
+                current_authors = list(piv.columns)
+            except Exception:
+                current_authors = sel if isinstance(sel, list) else []
+            _render_copy_grid(current_authors)
