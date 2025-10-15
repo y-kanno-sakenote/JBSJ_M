@@ -451,16 +451,135 @@ def render_coauthor_tab(df: pd.DataFrame, use_disk_cache: bool = False):
         with c4:
             top_n = st.number_input("ランキング件数", min_value=5, max_value=200, value=50, step=5, key="res_cnt_topn")
 
+        # --- データ準備（フィルタ適用後の著者ランキング） ---
         use = _apply_filters_basic(df, y_from, y_to, tg_sel, tp_sel)
-        s = _author_total_counts(use).head(int(top_n))
+        s = _author_total_counts(use)
         if s.empty:
             st.info("条件に合うデータがありません。")
         else:
             rank = s.reset_index()
             rank.columns = ["著者", "論文数"]
-            st.dataframe(rank, use_container_width=True, hide_index=True)
+
+
+            # 並び順は常に 論文数降順 → 著者名（同数時）
+            rank = rank.sort_values(["論文数", "著者"], ascending=[False, True])
+
+            # 表示件数の制御（右の表に適用）。バーは上位20を左に表示。
+            rank_shown = rank.head(int(top_n))
+
+            # ① 左右2ペイン（左：表 / 右：棒グラフ）
+            left, right = st.columns([1.0, 1.1])
+            with left:
+                st.dataframe(
+                    rank_shown[["著者", "論文数"]],
+                    use_container_width=True,
+                    hide_index=True,
+                    height=420,
+                )
+
+            with right:
+                try:
+                    import plotly.express as px
+                    # 横棒：上位10を降順で。上から大きい順に並ぶようにする
+                    bar_df = rank.head(10).sort_values("論文数", ascending=False)
+                    fig = px.bar(
+                        bar_df,
+                        x="論文数",
+                        y="著者",
+                        orientation="h",
+                        text_auto=True,
+                        title="上位著者（横棒グラフ）",
+                    )
+                    fig.update_layout(
+                        margin=dict(l=6, r=6, t=40, b=6),
+                        height=420,
+                        xaxis_title=None,
+                        yaxis_title=None,
+                    )
+                    fig.update_yaxes(autorange="reversed")
+                    st.plotly_chart(fig, use_container_width=True)
+                except Exception:
+                    # フォールバック：水平にできない場合でも上位10を表示
+                    st.bar_chart(rank.set_index("著者")["論文数"].head(10))
+
+            # ④ クイックコピー：現在表示行（rank_shown）の著者だけ
             with st.expander("📋 著者名をすぐコピー（補助機能）", expanded=False):
-                _render_copy_grid(rank["著者"].tolist())
+                _render_copy_grid(rank_shown["著者"].tolist())
+
+            # ⑥ 対象物別のTop5著者（改善版UI）
+            with st.expander("🏷️ 対象物別のTop5著者（現在のフィルタで集計）", expanded=False):
+                # ▼ 見やすさ改善版：対象物ごとのTop5を「横棒グラフの小カード」で並べる（最大8グループ）
+                view_mode = st.radio("表示形式", ["グラフ", "表"], horizontal=True, key="res_cnt_tg_view")
+                try:
+                    # 対象物ごとに著者カウント
+                    rows = []
+                    for _, r in use.iterrows():
+                        tg_list = list(dict.fromkeys(split_multi(r.get("対象物_top3", ""))))
+                        names = list(dict.fromkeys(split_authors(r.get("著者", ""))))
+                        for tg in tg_list:
+                            for n in names:
+                                if tg and n:
+                                    rows.append((tg, n))
+                    if not rows:
+                        st.caption("対象物別の上位情報はありません。")
+                    else:
+                        df_tg = pd.DataFrame(rows, columns=["対象物", "著者"]).value_counts().reset_index(name="件数")
+                        # 多すぎる対象物は上位のものだけ表示（最大8グループ）
+                        heads = df_tg.groupby("対象物")["件数"].sum().sort_values(ascending=False).head(8).index.tolist()
+                        show = (
+                            df_tg[df_tg["対象物"].isin(heads)]
+                            .sort_values(["対象物", "件数"], ascending=[True, False])
+                            .groupby("対象物")
+                            .head(5)
+                            .reset_index(drop=True)
+                        )
+
+                        # ダウンロード（CSV）
+                        st.download_button(
+                            "📥 この一覧をCSVで保存",
+                            data=show.to_csv(index=False).encode("utf-8"),
+                            file_name="target_top5_authors.csv",
+                            mime="text/csv",
+                            key="dl_target_top5_authors"
+                        )
+
+                        if view_mode == "表":
+                            st.dataframe(show, use_container_width=True, hide_index=True)
+                        else:
+                            try:
+                                import plotly.express as px
+                                # 対象物ごとに2列のカード配置で可読性UP
+                                cols = st.columns(2)
+                                for i, tg in enumerate(heads):
+                                    sub = show[show["対象物"] == tg].copy()
+                                    # 横棒用に並べ替え（小さい→大きいで積み上がる視覚を作る）
+                                    sub = sub.sort_values("件数", ascending=True)
+                                    with cols[i % 2]:
+                                        fig = px.bar(
+                                            sub,
+                                            x="件数",
+                                            y="著者",
+                                            orientation="h",
+                                            text_auto=True,
+                                            title=tg
+                                        )
+                                        fig.update_layout(
+                                            height=260,
+                                            margin=dict(l=8, r=8, t=36, b=8),
+                                            xaxis_title=None,
+                                            yaxis_title=None
+                                        )
+                                        st.plotly_chart(fig, use_container_width=True)
+                            except Exception:
+                                # Plotlyが無い場合は対象物ごとに小さな表で代替
+                                cols = st.columns(2)
+                                for i, tg in enumerate(heads):
+                                    sub = show[show["対象物"] == tg].sort_values("件数", ascending=False)
+                                    with cols[i % 2]:
+                                        st.markdown(f"**{tg}**")
+                                        st.dataframe(sub[["著者", "件数"]], use_container_width=True, hide_index=True)
+                except Exception as e:
+                    st.caption(f"対象物別Topの集計に失敗しました: {e!s}")
 
     # ===== ② 共著ネットワーク（既存ロジックをそのまま） =====
     with tab_network:
