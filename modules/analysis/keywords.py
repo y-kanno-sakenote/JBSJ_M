@@ -427,7 +427,6 @@ def safe_show_image(obj: Any) -> None:
     
 # ========= ① 頻出キーワード =========
 def _render_freq_block(df: pd.DataFrame) -> None:
-    st.markdown("### ① 頻出キーワード")
 
     ymin, ymax = year_min_max(df)
     c1, c2, c3, c4 = st.columns([1,1,1,1])
@@ -501,7 +500,6 @@ def _render_freq_block(df: pd.DataFrame) -> None:
 
 # ========= ② 共起ネットワーク（遅延描画） =========
 def _render_cooccur_block(df: pd.DataFrame) -> None:
-    st.markdown("### ② 共起キーワードネットワーク")
 
     ymin, ymax = year_min_max(df)
     c1, c2, c3, c4 = st.columns([1,1,1,1])
@@ -572,7 +570,6 @@ def _render_cooccur_block(df: pd.DataFrame) -> None:
             
 # ========= ③ トレンド（経年変化） =========
 def _render_trend_block(df: pd.DataFrame) -> None:
-    st.markdown("### ③ トレンド分析（経年変化）")
 
     ymin, ymax = year_min_max(df)
     c1, c2, c3,c4 = st.columns([1,1,1,1])
@@ -632,7 +629,36 @@ def _render_trend_block(df: pd.DataFrame) -> None:
         
 # ========= エクスポート：タブ本体 =========
 def render_keyword_tab(df: pd.DataFrame) -> None:
-    st.markdown("## 🧠 キーワード分析")
+    st.markdown(
+        """
+        <style>
+          .kw-header {
+            display: flex;
+            align-items: center;      /* 中揃え（縦方向） */
+            gap: 12px;
+            flex-wrap: wrap;
+          }
+          .kw-header h2 {
+            margin: 0;
+          }
+          .kw-cap {
+            margin: 0;
+            font-size: 0.95rem;
+            color: #6b7280; /* slate-500 */
+            line-height: 1.6;
+            white-space: nowrap;
+          }
+          @media (max-width: 640px) {
+            .kw-cap { white-space: normal; }
+          }
+        </style>
+        <div class="kw-header">
+          <h2>💬 キーワード</h2>
+          <span class="kw-cap">キーワードの頻度・共起・トレンドを確認できます。</span>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
 
     tab1, tab2, tab3 = st.tabs([
         "① 頻出キーワード",

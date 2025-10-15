@@ -411,9 +411,18 @@ def _render_copy_grid(authors: List[str]) -> None:
 
 # ========= UI構築 =========
 def render_coauthor_tab(df: pd.DataFrame, use_disk_cache: bool = False):
-    # ===== タブ見出し =====
-    st.markdown("## 👨‍🔬 研究者")
-    st.caption("著者別の論文数・共著ネットワーク・トレンド（年次推移）を確認できます。")
+    # ===== タブ見出し（下揃え＋横並び） =====
+    st.markdown(
+        """
+        <div style="display:flex; align-items:center; gap:10px; flex-wrap:wrap; margin: 0 0 4px 0;">
+          <h2 style="margin:0; line-height:1; font-weight:600;">👨‍🔬 研究者</h2>
+          <div style="margin:0 0 2px 0; line-height:1.2; opacity:0.8; font-size:0.95rem;">
+            著者別の論文数・共著ネットワーク・トレンドを確認できます。
+          </div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
 
     if df is None or ("著者" not in df.columns):
         st.warning("著者データが見つかりません。")
@@ -423,7 +432,7 @@ def render_coauthor_tab(df: pd.DataFrame, use_disk_cache: bool = False):
     ymin, ymax = _year_min_max(df)
 
     # サブタブ構成：①論文数 ②共著ネットワーク ③トレンド分析
-    tab_count, tab_network, tab_trend = st.tabs(["📚 論文数", "🕸️ 共著ネットワーク", "📈 トレンド分析"])
+    tab_count, tab_network, tab_trend = st.tabs(["① 論文数", "② 共著ネットワーク", "③ トレンド分析"])
 
     # ===== ① 論文数 =====
     with tab_count:
@@ -503,7 +512,14 @@ def render_coauthor_tab(df: pd.DataFrame, use_disk_cache: bool = False):
         if edges.empty:
             st.info("共著関係が見つかりませんでした。条件を調整してください。")
         else:
-            st.markdown("### 🔝 研究者のつながりランキング")
+            st.markdown(
+                """
+                <div style="display:flex; align-items:center; gap:6px; margin:6px 0 2px 0;">
+                  <span style="font-weight:600; font-size:0.95rem; opacity:0.9;">🔝 研究者のつながりランキング</span>
+                </div>
+                """,
+                unsafe_allow_html=True,
+            )
             rank = centrality_from_edges(edges, metric=metric).head(int(top_n))
             st.dataframe(rank, use_container_width=True, hide_index=True)
             st.caption("※ 指標の意味：次数=つながりの数 / 媒介=橋渡し度 / 固有ベクトル=影響力（有力者との結び付き）")

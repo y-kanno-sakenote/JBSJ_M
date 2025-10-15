@@ -139,7 +139,8 @@ def _cross_counts(df: pd.DataFrame, col_a: str, col_b: str) -> pd.DataFrame:
 
 
 def _render_distribution_block(df: pd.DataFrame) -> None:
-    st.markdown("### 📊 分布：対象物／研究タイプ の件数")
+    # Small subheading style for inline subttls
+    st.markdown("<style>.subttl{font-size:0.95rem; opacity:0.75; margin:0 0 0.25rem;}</style>", unsafe_allow_html=True)
 
     # ---- 対象物集計 ----
     tg_series = (
@@ -214,7 +215,8 @@ def _render_distribution_block(df: pd.DataFrame) -> None:
 
 
 def _render_cross_block(df: pd.DataFrame) -> None:
-    st.markdown("### 🔥 対象物 × 研究タイプ（クロスヒートマップ）")
+    # Use the same subttl style for the cross heatmap
+    st.markdown('<div style="font-weight=600; font-size:1.1rem; margin:0 0 0.25rem;">対象物 × 研究タイプ（クロスヒートマップ）</div>', unsafe_allow_html=True)
 
     cross = _cross_counts(df, "対象物_top3", "研究タイプ_top3")
     if cross.empty:
@@ -300,7 +302,6 @@ def _yearly_counts(df: pd.DataFrame, col: str) -> pd.DataFrame:
     return c.sort_values(["発行年", "count"], ascending=[True, False]).reset_index(drop=True)
 
 def _render_trend_block(df: pd.DataFrame) -> None:
-    st.markdown("### ② 経年変化（トレンド）")
 
     ymin_all, ymax_all = _year_min_max(df)
     c1, c2, c3 = st.columns([1, 1, 1])
@@ -501,7 +502,6 @@ def _draw_pyvis_from_edges(edges: pd.DataFrame, height_px: int = 650) -> None:
     )
     
 def _render_cooccurrence_block(df: pd.DataFrame) -> None:
-    st.markdown("### ③ 共起ネットワーク（対象物・研究タイプ）")
 
     ymin_all, ymax_all = _year_min_max(df)
     c1, c2, c3, c4 = st.columns([1, 1, 1, 1])
@@ -569,7 +569,15 @@ def _render_cooccurrence_block(df: pd.DataFrame) -> None:
 
 # ========= エクスポート：タブ本体 =========
 def render_targettype_tab(df: pd.DataFrame) -> None:
-    st.markdown("## 🧂 対象物・研究タイプ分析")
+    st.markdown(
+        """
+        <div style="display:flex; gap:14px; align-items:center; flex-wrap:wrap;">
+          <h2 style="margin:0;">🧬 対象物・研究タイプ分析</h2>
+          <span style="opacity:0.8;">対象物・研究タイプの分布・クロス集計・共起ネットワーク・トレンドを確認できます。</span>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
 
     tab1, tab2, tab3 = st.tabs([
         "① 構成比・クロス集計",
