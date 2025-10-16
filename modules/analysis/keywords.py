@@ -221,6 +221,13 @@ try:
 except Exception:
     HAS_PYVIS = False
 
+# Optional: community detection
+try:
+    from networkx.algorithms.community import greedy_modularity_communities as _greedy_comms  # type: ignore
+    HAS_COMMUNITY = True
+except Exception:
+    HAS_COMMUNITY = False
+
 # 永続キャッシュIO（あれば使う）
 try:
     from modules.common.cache_utils import cache_csv_path, load_csv_if_exists, save_csv
@@ -327,6 +334,25 @@ def keyword_freq(df: pd.DataFrame) -> pd.Series:
         return pd.Series(dtype=int)
     return s.value_counts().sort_values(ascending=False)
 
+# --- 新規: 頻度をモード別で計算 ---
+@st.cache_data(ttl=600, show_spinner=False)
+def keyword_freq_by_mode(df: pd.DataFrame, mode: str = "df") -> pd.Series:
+    """
+    mode: "df" = 登場論文数（1論文に同語が複数回あっても1カウント）
+          "tf" = 総出現回数（従来どおり）
+    """
+    if mode == "df":
+        # 1レコード内は重複除去してから集計
+        bags: list[str] = []
+        for _, r in df.iterrows():
+            kws = list(dict.fromkeys(_extract_keywords_from_row(r)))
+            bags.extend(kws)
+        if not bags:
+            return pd.Series(dtype=int)
+        return pd.Series(bags, dtype="object").value_counts().sort_values(ascending=False)
+    else:
+        return keyword_freq(df)
+
 @st.cache_data(ttl=600, show_spinner=False)
 def yearly_keyword_counts(df: pd.DataFrame) -> pd.DataFrame:
     """年×語の件数（論文ごと重複除去）"""
@@ -372,7 +398,7 @@ def _freq_to_df(freq: pd.Series, topn: int) -> pd.DataFrame:
     df.columns = ["キーワード","件数"]
     return df
 
-def _draw_pyvis_from_edges(edges: pd.DataFrame, height_px: int = 650) -> None:
+def _draw_pyvis_from_edges(edges: pd.DataFrame, height_px: int = 650, color_mode: str = "community", freeze_layout: bool = False) -> None:
     if not (HAS_NX and HAS_PYVIS):
         st.info("networkx / pyvis が未導入のため、表のみ表示しています。")
         return
@@ -380,20 +406,160 @@ def _draw_pyvis_from_edges(edges: pd.DataFrame, height_px: int = 650) -> None:
         st.warning("対象条件でエッジがありません。")
         return
 
-    # 文字列IDに統一
+    # ===== グラフ構築（重み付き無向グラフ）=====
     G = nx.Graph()
     for _, r in edges.iterrows():
-        s = str(r["src"]); t = str(r["dst"]); w = int(r["weight"])
+        s = str(r["src"]); t = str(r["dst"]); w = float(r["weight"])
         if G.has_edge(s, t):
             G[s][t]["weight"] += w
         else:
             G.add_edge(s, t, weight=w)
 
+    # ノード指標（可視化用スケーリング）
+    # - deg_w: 重み付き次数（隣接エッジ重みの合計）
+    # - deg: 度数（隣接ノード数）
+    deg = dict(G.degree())
+    deg_w = {n: 0.0 for n in G.nodes()}
+    for u, v, d in G.edges(data=True):
+        w = float(d.get("weight", 1.0))
+        deg_w[u] += w
+        deg_w[v] += w
+
+    # ---- 色分けロジック（既定: community）----
+    node_group: dict[str, int] = {}
+    legend_lines: list[str] = []
+    if color_mode == "community" and HAS_COMMUNITY:
+        try:
+            comms = list(_greedy_comms(G, weight="weight"))
+            for gi, nodes in enumerate(comms):
+                for n in nodes:
+                    node_group[str(n)] = gi
+            legend_lines = [f"Cluster {i+1}: {len(nodes)}語" for i, nodes in enumerate(comms)]
+        except Exception as e:
+            st.info(f"クラスタ分割に失敗したため、単色表示に切り替えます（{e}）。")
+            node_group = {}
+    elif color_mode == "degree":
+        try:
+            dc = nx.degree_centrality(G)
+            vals = pd.Series(dc).rank(pct=True)
+            for n, pct in vals.items():
+                if pct <= 0.25: g = 0
+                elif pct <= 0.5: g = 1
+                elif pct <= 0.75: g = 2
+                else: g = 3
+                node_group[str(n)] = g
+            legend_lines = ["中心性 下位25%", "25–50%", "50–75%", "上位25%"]
+        except Exception as e:
+            st.info(f"中心性の計算に失敗したため、単色表示に切り替えます（{e}）。")
+            node_group = {}
+    # "none" は単色
+
+    # ===== PyVis 描画 =====
     net = Network(height=f"{height_px}px", width="100%", bgcolor="#ffffff", font_color="#222")
-    net.barnes_hut(gravity=-30000, central_gravity=0.25, spring_length=120, spring_strength=0.02)
+    # 物理シミュレーションをやや強め、見栄えの良いレイアウト
+    net.barnes_hut(gravity=-25000, central_gravity=0.15, spring_length=140, spring_strength=0.03, damping=0.18)
+
+    # パレット（モダンで落ち着いた色調）
+    palette = [
+        "#6366F1","#22C55E","#F59E0B","#EF4444","#0EA5E9","#A855F7",
+        "#14B8A6","#F97316","#84CC16","#E11D48","#06B6D4","#10B981"
+    ]
+
+    # ノードの属性を設定（サイズ・グループ・タイトル・短縮ラベル）
+    def _scale(value, vmin, vmax, out_min=8, out_max=36):
+        if vmax == vmin:
+            return (out_min + out_max) / 2
+        r = (value - vmin) / (vmax - vmin)
+        return out_min + r * (out_max - out_min)
+
+    # スケールの元（重み合計を優先、無ければ度数）
+    w_values = list(deg_w.values())
+    wmin, wmax = (min(w_values), max(w_values)) if w_values else (0.0, 1.0)
+
+    for n in G.nodes():
+        wsum = float(deg_w.get(n, 0.0))
+        d = int(deg.get(n, 1))
+        size = _scale(wsum if wsum > 0 else d, wmin if wmin > 0 else 0.0, wmax if wmax > 0 else 1.0)
+        g = node_group.get(str(n))
+        if g is not None:
+            G.nodes[n]["group"] = int(g)
+            # 色を固定したい場合は「color」を指定することも可能：G.nodes[n]["color"] = palette[g % len(palette)]
+        # ラベルは長すぎる場合は省略
+        label = str(n)
+        label_short = label if len(label) <= 18 else (label[:16] + "…")
+        G.nodes[n]["label"] = label_short
+        G.nodes[n]["title"] = f"{label}<br>重み合計: {wsum:.0f} / 度数: {d}"
+        G.nodes[n]["value"] = size  # scaling.min/max と組み合わせてサイズ反映
+
+    # エッジ幅は重みでスケール
+    e_w = [float(d.get("weight", 1.0)) for _, _, d in G.edges(data=True)]
+    if e_w:
+        ew_min, ew_max = (min(e_w), max(e_w))
+    else:
+        ew_min, ew_max = (1.0, 1.0)
+    def _ew_scale(w):
+        if ew_max == ew_min:
+            return 1.5
+        return 1.0 + 4.0 * (w - ew_min) / (ew_max - ew_min)
+    for u, v, d in G.edges(data=True):
+        d["width"] = _ew_scale(float(d.get("weight", 1.0)))
+
     net.from_nx(G)
-    html = net.generate_html(notebook=False)  # ← ブラウザ自動オープン回避
+
+    # スタイリッシュなオプション
+    try:
+        net.set_options("""
+        {
+          "interaction": {
+            "hover": true,
+            "navigationButtons": false,
+            "multiselect": true,
+            "tooltipDelay": 120
+          },
+          "nodes": {
+            "shape": "dot",
+            "shadow": true,
+            "scaling": { "min": 8, "max": 36 },
+            "font": { "size": 16, "face": "Inter, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial" },
+            "borderWidth": 1
+          },
+          "edges": {
+            "smooth": {"type": "dynamic"},
+            "color": { "opacity": 0.45 }
+          },
+          "physics": {
+            "stabilization": { "enabled": true, "iterations": 220 },
+            "barnesHut": { "avoidOverlap": 0.25, "springLength": 140, "springConstant": 0.03, "damping": 0.18 },
+            "minVelocity": 0.75
+          }
+        }
+        """)
+    except Exception:
+        pass
+
+    html = net.generate_html(notebook=False)
+    # （任意）初期安定化後に物理を停止して「ブルブル」を防ぐ
+    if freeze_layout:
+        html = html.replace(
+            "network = new vis.Network(container, data, options);",
+            "network = new vis.Network(container, data, options);\nnetwork.once('stabilizationIterationsDone', function () { network.setOptions({ physics: false }); });"
+        )
     st.components.v1.html(html, height=height_px, scrolling=True)
+
+    # 凡例とダウンロード
+    cols = st.columns([1, 1])
+    with cols[0]:
+        if legend_lines:
+            st.caption("色分け凡例（概略）: " + " / ".join(legend_lines))
+    with cols[1]:
+        st.download_button(
+            "📥 ネットワークHTMLを保存",
+            data=html.encode("utf-8"),
+            file_name="keyword_cooccurrence_network.html",
+            mime="text/html",
+            key="dl_kw_pyvis_html",
+            help="単独で開けるHTMLファイルとして保存します（ブラウザでそのまま閲覧可能）。"
+        )
 
 # ==== キーワード用：クイックコピー（小さな補助UI。既存UIを崩さない） ====
 from typing import List as _ListForCopy
@@ -505,82 +671,162 @@ def safe_show_image(obj: Any) -> None:
     
 # ========= ① 頻出キーワード =========
 def _render_freq_block(df_use: pd.DataFrame) -> None:
-    c1, c2 = st.columns([1,1])
+    # ---- UI（横並び：表示件数 / 最低総出現回数 / カウント方式）----
+    c1, c2, c3 = st.columns([1, 1, 1.6])
     with c1:
         topn = st.number_input("表示件数", min_value=5, max_value=100, value=30, step=5, key="kw_freq_topn")
     with c2:
-        st.caption("")
+        min_total = st.number_input("最低総出現回数", min_value=1, max_value=100, value=3, step=1, key="kw_freq_min_total",
+                                    help="全期間での合計出現回数がこの値未満の語を除外します。")
+    with c3:
+        count_mode_label = st.radio(
+            "カウント方式",
+            options=["登場論文数（DF）", "総出現回数（TF）"],
+            index=0,
+            horizontal=True,
+            key="kw_freq_countmode",
+            help="DF=1論文に同語が何回出ても1カウント。TF=出現回数そのままカウント。"
+        )
+        count_mode = "df" if "DF" in count_mode_label else "tf"
 
     use = df_use
-    freq = keyword_freq(use)
-    freq_df = _freq_to_df(freq, int(topn))
 
-    if freq_df.empty:
+    # 基本頻度（モード別）
+    freq = keyword_freq_by_mode(use, mode=count_mode)  # Series: index=keyword, value=count
+    if freq.empty:
         st.info("条件に合うキーワードが見つかりませんでした。")
         return
 
+    # 最低総出現回数（TF/DF いずれのモードでも、合計カウントが閾値未満の語を除外）
+    if int(min_total) > 1:
+        freq = freq[freq >= int(min_total)]
+
+    freq_df = _freq_to_df(freq, int(topn))
+    if freq_df.empty:
+        st.info("（フィルタで該当なし）条件を緩めてください。")
+        return
+
     # グラフ
+    title_suffix = "（登場論文数）" if count_mode == "df" else "（出現回数）"
     if HAS_PX:
-        fig = px.bar(freq_df, x="キーワード", y="件数", text_auto=True, title="頻出キーワード")
-        fig.update_layout(margin=dict(l=10,r=10,t=40,b=10), height=420)
+        fig = px.bar(freq_df, x="キーワード", y="件数", text_auto=True, title=f"頻出キーワード{title_suffix}")
+        fig.update_layout(margin=dict(l=10, r=10, t=40, b=10), height=420)
         st.plotly_chart(fig, use_container_width=True)
         # クイックコピー（TopN キーワード）
         with st.expander("📋 キーワードをすぐコピー", expanded=False):
-            try:
-                _copy_items = freq_df["キーワード"].astype(str).tolist()
-            except Exception:
-                _copy_items = []
-            _render_copy_grid(_copy_items)
+            _render_copy_grid(freq_df["キーワード"].astype(str).tolist())
     else:
         st.bar_chart(freq_df.set_index("キーワード")["件数"])
-        # クイックコピー（TopN キーワード）
         with st.expander("📋 キーワードをすぐコピー", expanded=False):
-            try:
-                _copy_items = freq_df["キーワード"].astype(str).tolist()
-            except Exception:
-                _copy_items = []
-            _render_copy_grid(_copy_items)
+            _render_copy_grid(freq_df["キーワード"].astype(str).tolist())
 
-    # WordCloud（任意・ボタン生成）
+    # WordCloud（任意）
     with st.expander("☁ WordCloud", expanded=False):
         if HAS_WC:
             if st.button("生成する", key="kw_wc_btn"):
                 textfreq = {row["キーワード"]: int(row["件数"]) for _, row in freq_df.iterrows()}
-                # 日本語フォント対応（見つかれば適用）
                 font_path = _get_japanese_font_path()
                 wc = WordCloud(width=900, height=450, background_color="white",
                                collocations=False, prefer_horizontal=1.0,
                                font_path=font_path or None)
                 img = wc.generate_from_frequencies(textfreq).to_image()
-                # --- ここだけ差し替え（UI変更なし） ---
                 safe_show_image(img)
         else:
             st.caption("※ wordcloud が未導入のため非表示です。")
 
 # ========= ② 共起ネットワーク（遅延描画） =========
 def _render_cooccur_block(df_use: pd.DataFrame) -> None:
-    c1, c2 = st.columns([1,1])
-    with c1:
+    c1, c2, c3, c4, c5 = st.columns([1, 1, 1.6, 1.6, 0.9])
+    with c2:
         min_edge = st.number_input(
             "最低共起数（同時出現）",
             min_value=1, max_value=50, value=3, step=1, key="kw_co_minw",
             help="同じ論文内で2つのキーワードが一緒に登場した回数です。値を上げるほど“よく組み合わせて語られる”強い関係だけが残ります。"
         )
-    with c2:
+    with c1:
         topN = st.number_input(
-            "表示するキーワード数（多い順）",
+            "表示キーワード数",
             min_value=30, max_value=300, value=120, step=10, key="kw_co_topn",
             help="出現回数が多いキーワードから上位N語だけを残します。増やすほど網は細かくなりますが、見づらく/重くなることがあります。"
         )
+    with c3:
+        include_raw = st.text_input(
+            "必須キーワード（部分一致・カンマ区切り）",
+            value="",
+            key="kw_co_include",
+            help="ここに含めた語のいずれかを含むエッジだけ残します（OR条件）。例: 酵母, 乳酸菌",
+            placeholder="例: 酵母, 乳酸菌"
+        )
+    with c4:
+        exclude_raw = st.text_input(
+            "除外キーワード（部分一致・カンマ区切り）",
+            value="",
+            key="kw_co_exclude",
+            help="ここに含めた語を含むエッジは除外します。例: 試験, 実験",
+            placeholder="例: 試験, 実験"
+        )
+    with c5:
+        # align checkbox vertically with the text inputs on the left
+        st.markdown("<div style='height: 32px'></div>", unsafe_allow_html=True)
+        lcc_only = st.checkbox(
+            "主要ネットワークのみ",
+            value=False,
+            key="kw_co_lcc_only",
+            help="グラフが複数の島に分かれる場合、一番大きい島（最大連結成分）だけを表示します。ノイズを減らし全体像を見やすくします。"
+        )
+
+    # 色分けは自動クラスタを既定で使用（ユーザー選択は廃止）
+    _color_mode = "community"
+
+    if not HAS_COMMUNITY:
+        st.info("自動クラスタ色分けには networkx の community 機能が必要です。環境で利用できないため、単色表示になります。")
+
+    def _parse_kw_list(s: str) -> list[str]:
+        return [w.strip() for w in re.split(r"[,;；、，/／|｜\s　]+", str(s or "")) if w.strip()]
+
+    include_list = [norm_key(x) for x in _parse_kw_list(include_raw)]
+    exclude_list = [norm_key(x) for x in _parse_kw_list(exclude_raw)]
 
     use = df_use
     # --- キャッシュと描画ロジックはそのまま ---
     edges = build_keyword_cooccur_edges(use, int(min_edge))
+    # 1) 必須/除外キーワードフィルタを適用（部分一致）
+    if not edges.empty and (include_list or exclude_list):
+        def _contains_any(name: str, needles: list[str]) -> bool:
+            s = norm_key(name)
+            return any(n in s for n in needles)
+
+        if include_list:
+            mask_inc = edges["src"].astype(str).map(lambda v: _contains_any(v, include_list)) | \
+                       edges["dst"].astype(str).map(lambda v: _contains_any(v, include_list))
+            edges = edges[mask_inc]
+
+        if not edges.empty and exclude_list:
+            mask_exc = edges["src"].astype(str).map(lambda v: _contains_any(v, exclude_list)) | \
+                       edges["dst"].astype(str).map(lambda v: _contains_any(v, exclude_list))
+            edges = edges[~mask_exc]
+
     if not edges.empty and int(topN) > 0:
         deg = pd.concat([edges.groupby("src")["weight"].sum(),
                          edges.groupby("dst")["weight"].sum()], axis=1).fillna(0).sum(axis=1)
         keep_nodes = set(deg.sort_values(ascending=False).head(int(topN)).index.tolist())
         edges = edges[edges["src"].isin(keep_nodes) & edges["dst"].isin(keep_nodes)].reset_index(drop=True)
+
+    # 2) 最大連結成分のみ（LCC）
+    if lcc_only and HAS_NX and not edges.empty:
+        try:
+            G_tmp = nx.Graph()
+            for _, r in edges.iterrows():
+                G_tmp.add_edge(str(r["src"]), str(r["dst"]))
+            if G_tmp.number_of_nodes() > 0:
+                comps = list(nx.connected_components(G_tmp))
+                if comps:
+                    lcc_nodes = set(max(comps, key=len))
+                    edges = edges[edges["src"].astype(str).isin(lcc_nodes) & edges["dst"].astype(str).isin(lcc_nodes)].reset_index(drop=True)
+        except Exception as _e:
+            st.info(f"LCC 抽出で例外が発生しました（{_e}）。全体を表示します。")
+    elif lcc_only and not HAS_NX:
+        st.info("LCC 表示は networkx が必要です。networkx が未導入のため全体を表示します。")
 
     st.caption(f"エッジ数: {len(edges)}")
     st.dataframe(edges.head(200), use_container_width=True, hide_index=True)
@@ -594,59 +840,121 @@ def _render_cooccur_block(df_use: pd.DataFrame) -> None:
         _render_copy_grid(_nodes)
 
     with st.expander("🕸️ ネットワークを可視化", expanded=False):
+        freeze_layout = st.checkbox(
+            "レイアウトを固定",
+            value=True,
+            key="kw_co_freeze",
+            help="初期レイアウトが安定したら物理演算を停止します。大規模ネットワークでの“ブルブル”を抑えます。"
+        )
         if HAS_PYVIS and HAS_NX:
             if st.button("🌐 描画する", key="kw_co_draw"):
-                _draw_pyvis_from_edges(edges, height_px=680)
+                _draw_pyvis_from_edges(edges, height_px=680, color_mode=_color_mode, freeze_layout=freeze_layout)
         else:
             st.info("networkx / pyvis が未導入のため、表のみ表示しています。")
 # ========= ③ トレンド（経年変化） =========
 def _render_trend_block(df_use: pd.DataFrame) -> None:
-    c1, c2 = st.columns([1,1])
+    # Arrange controls horizontally using st.columns
+    c1, c2, c3, c4, c5 = st.columns([1, 1, 1.6, 1.6, 1.2])
     with c1:
-        topn = st.number_input("表示する語数（TopN）", min_value=5, max_value=50, value=15, step=5, key="kw_trend_topn")
+        topn = st.number_input(
+            "表示する語数（TopN）", min_value=5, max_value=50, value=15, step=5, key="kw_trend_topn"
+        )
     with c2:
-        ma = st.number_input("移動平均（年）", min_value=1, max_value=7, value=1, step=1, key="kw_trend_ma")
+        ma = st.number_input(
+            "移動平均（年）", min_value=1, max_value=7, value=1, step=1, key="kw_trend_ma"
+        )
+    with c3:
+        include_raw = st.text_input(
+            "必須キーワード（部分一致）",
+            value="",
+            key="kw_trend_include",
+            help="ここに含めた語のいずれかを含むキーワードのみ表示します（OR条件）。例: 酵母, 乳酸菌",
+            placeholder="例: 酵母, 乳酸菌"
+        )
+    with c4:
+        exclude_raw = st.text_input(
+            "除外キーワード（部分一致）",
+            value="",
+            key="kw_trend_exclude",
+            help="ここに含めた語を含むキーワードを除外します。例: 試験, 実験",
+            placeholder="例: 試験, 実験"
+        )
+    with c5:
+        metric = st.radio(
+            "指標",
+            ["件数", "シェア(%)"],
+            index=0,
+            horizontal=True,
+            key="kw_trend_metric",
+            help="シェア(%)は各年の全キーワード合計に対する割合。年ごとの件数差を補正できます。"
+        )
 
     use = df_use
     yearly = yearly_keyword_counts(use)
+
+    # --- 必須/除外キーワードフィルタ ---
+    def _parse_kw_list(s: str) -> list[str]:
+        return [w.strip() for w in re.split(r"[,;；、，/／|｜\s　]+", str(s or "")) if w.strip()]
+
+    include_list = [norm_key(x) for x in _parse_kw_list(include_raw)]
+    exclude_list = [norm_key(x) for x in _parse_kw_list(exclude_raw)]
+
+    if not yearly.empty:
+        # 必須キーワードフィルタ
+        if include_list:
+            mask_inc = yearly["keyword"].astype(str).map(lambda v: any(n in norm_key(v) for n in include_list))
+            yearly = yearly[mask_inc]
+        # 除外キーワードフィルタ
+        if exclude_list:
+            mask_exc = yearly["keyword"].astype(str).map(lambda v: any(n in norm_key(v) for n in exclude_list))
+            yearly = yearly[~mask_exc]
+
     if yearly.empty:
         st.info("データがありません。")
         return
 
-    # 最新年付近のTopN語を選ぶ（全体上位だと凡例が多すぎるため）
     latest_year = yearly["発行年"].max()
-    latest_top = (yearly[yearly["発行年"] == latest_year]
-                  .sort_values("count", ascending=False)["keyword"]
-                  .head(int(topn)).tolist())
+    latest_top = (
+        yearly[yearly["発行年"] == latest_year]
+        .sort_values("count", ascending=False)["keyword"]
+        .head(int(topn)).tolist()
+    )
 
-    piv = (yearly[yearly["keyword"].isin(latest_top)]
-           .pivot_table(index="発行年", columns="keyword", values="count", aggfunc="sum")
-           .fillna(0).sort_index())
+    piv = (
+        yearly[yearly["keyword"].isin(latest_top)]
+        .pivot_table(index="発行年", columns="keyword", values="count", aggfunc="sum")
+        .fillna(0).sort_index()
+    )
 
-    # ★ 凡例順＝最新年度の多い順で列を並べ替え（st.line_chart でも順序が反映される）
+    # シェア(%)に変換（年内合計で割る）
+    if metric.startswith("シェア"):
+        row_sums = piv.sum(axis=1).replace(0, 1)
+        piv = (piv.T / row_sums).T * 100.0
+
+    # 凡例順＝最新年度の多い順で列を並べ替え
     legend_order = [k for k in latest_top if k in piv.columns]
     others = [k for k in piv.columns if k not in legend_order]
-    piv = piv[legend_order + sorted(others)]  # 未使用の列が紛れても後尾に整列
+    piv = piv[legend_order + sorted(others)]
 
     if int(ma) > 1:
         piv = piv.rolling(window=int(ma), min_periods=1).mean()
 
     if HAS_PX:
+        y_label = "シェア(%)" if metric.startswith("シェア") else "件数"
         fig = px.line(
-            piv.reset_index().melt(id_vars="発行年", var_name="キーワード", value_name="件数"),
-            x="発行年", y="件数", color="キーワード", markers=True,
-            # ★ Plotly 側でもレジェンド順を固定
+            piv.reset_index().melt(id_vars="発行年", var_name="キーワード", value_name=y_label),
+            x="発行年", y=y_label, color="キーワード", markers=True,
             category_orders={"キーワード": legend_order + sorted(others)}
         )
-        fig.update_layout(height=520, margin=dict(l=10,r=10,t=30,b=10))
+        if metric.startswith("シェア"):
+            fig.update_yaxes(ticksuffix="%", rangemode="tozero")
+        fig.update_layout(height=520, margin=dict(l=10, r=10, t=30, b=10))
         st.plotly_chart(fig, use_container_width=True)
-        # クイックコピー（プロット対象のキーワード＝凡例と一致）
         with st.expander("📋 キーワードをすぐコピー", expanded=False):
             _legend_items = [c for c in piv.columns if c != "発行年"] if hasattr(piv, 'columns') else []
             _render_copy_grid([str(x) for x in _legend_items])
     else:
         st.line_chart(piv)
-        # クイックコピー（プロット対象のキーワード＝凡例と一致）
         with st.expander("📋 キーワードをすぐコピー", expanded=False):
             _legend_items = [c for c in piv.columns if c != "発行年"] if hasattr(piv, 'columns') else []
             _render_copy_grid([str(x) for x in _legend_items])
