@@ -43,7 +43,7 @@ prefill_author = qp.get("author", None)
 
 
 # -------------------- ページ設定 --------------------
-st.set_page_config(page_title="論文検索（統一UI版）", layout="wide")
+st.set_page_config(page_title="醸造協会誌 論文検索", layout="wide")
 
 # -------------------- コントラスト（著者ドロップダウン強化版） --------------------
 st.markdown(
@@ -265,7 +265,7 @@ def make_row_id(row):
     return f"T:{ttl}|Y:{yr}"
 
 # -------------------- データ読み込み --------------------
-st.title("醸造協会誌　論文検索 β_2.1-m")
+st.title("醸造協会誌　論文検索 β_3.0")
 
 DEMO_CSV_PATH = Path("data/keywords_summary5.csv")   # メインCSV
 SUMMARY_CSV_PATH = Path("data/summaries.csv")         # ← 追加: summary
