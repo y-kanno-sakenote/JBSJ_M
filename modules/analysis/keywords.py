@@ -245,26 +245,6 @@ KEY_COLS = [
     "キーワード6","キーワード7","キーワード8","キーワード9","キーワード10",
 ]
 
-# ---- ストップワード（英語＋日本語の汎用ノイズ + 'nan'）----
-STOPWORDS = set([
-    # 英語系
-    "and","the","of","to","in","for","on","at","with","by","an","is","are",
-    "this","that","it","as","be","from","was","were","or","a","we","our",
-    "their","can","may","will","using","use","used","study","based",
-    "analysis","data","result","results","method","methods","conclusion",
-    "discussion","introduction","materials","material","supplementary",
-    "figure","table","et","al","etc","between","among","within","into",
-    "over","under","than","then","there","here","such","these","those",
-    "however","therefore","thus","because","due","per","based","according",
-    "observed","obtained","present","presented","approach","paper","research",
-    "nan","none","null",
-    # 日本語系（助詞・形式名詞・汎用ノイズ）
-    "これ","それ","あれ","ため","もの","こと","よう","また","および","およびび",
-    "における","について","により","による","など","する","した","して","され","される",
-    "いる","ある","なる","できる","可能","結果","方法","目的","考察","結論","序論",
-    "図","表","例","例えば","本研究","本論文","本報","本報告","本稿","一方","一方で",
-    "さらに","しかし","そこで","まず","次に","最後","以上","以下","本","各","本学","同",
-])
 
 def norm_key(s: str) -> str:
     s = str(s or "").replace("\u00A0", " ")
@@ -275,37 +255,6 @@ def split_multi(s) -> List[str]:
     if not s:
         return []
     return [w.strip() for w in _SPLIT_MULTI_RE.split(str(s)) if w.strip()]
-
-def col_contains_any(df_col: pd.Series, needles: List[str]) -> pd.Series:
-    if not needles:
-        return pd.Series([True] * len(df_col), index=df_col.index)
-    lo_needles = [norm_key(n) for n in needles]
-    def _hit(v: str) -> bool:
-        s = norm_key(v)
-        return any(n in s for n in lo_needles)
-    return df_col.fillna("").astype(str).map(_hit)
-
-@st.cache_data(ttl=600, show_spinner=False)
-def year_min_max(df: pd.DataFrame) -> Tuple[int, int]:
-    if "発行年" not in df.columns:
-        return (1980, 2025)
-    y = pd.to_numeric(df["発行年"], errors="coerce")
-    if y.notna().any():
-        return (int(y.min()), int(y.max()))
-    return (1980, 2025)
-
-def _apply_filters(df: pd.DataFrame,
-                   y_from: int, y_to: int,
-                   targets: List[str], types: List[str]) -> pd.DataFrame:
-    use = df.copy()
-    if "発行年" in use.columns:
-        y = pd.to_numeric(use["発行年"], errors="coerce")
-        use = use[(y >= y_from) & (y <= y_to) | y.isna()]
-    if targets and "対象物_top3" in use.columns:
-        use = use[col_contains_any(use["対象物_top3"], targets)]
-    if types and "研究タイプ_top3" in use.columns:
-        use = use[col_contains_any(use["研究タイプ_top3"], types)]
-    return use
 
 
 def _extract_keywords_from_row(row: pd.Series) -> List[str]:
@@ -562,6 +511,7 @@ def _draw_pyvis_from_edges(edges: pd.DataFrame, height_px: int = 650, color_mode
         )
 
 # ==== キーワード用：クイックコピー（小さな補助UI。既存UIを崩さない） ====
+# ==== キーワード用：クイックコピー（小さな補助UI。既存UIを崩さない） ====
 from typing import List as _ListForCopy
 
 def _render_copy_grid(items: _ListForCopy[str]) -> None:
@@ -596,6 +546,18 @@ def _render_copy_grid(items: _ListForCopy[str]) -> None:
     html += "</div>"
     import streamlit.components.v1 as components  # 局所import（古い環境互換）
     components.html(html, height=200, scrolling=True)
+
+# ==== 汎用: キーワードリストパース&コピーエクスパンダ ====
+def _parse_kw_list(s: str) -> list[str]:
+    """カンマ/区切り文字/空白で分割してトリム"""
+    return [w.strip() for w in re.split(r"[,;；、，/／|｜\s　]+", str(s or "")) if w.strip()]
+
+def _render_copy_expander(items: list[str], title: str) -> None:
+    """コピー用エクスパンダ（空なら表示しない）"""
+    if not items:
+        return
+    with st.expander(title, expanded=False):
+        _render_copy_grid([str(x) for x in items])
 
 # ==== 追加：安全表示ヘルパー（UIは変えずに落ちにくく） ====
 def safe_show_image(obj: Any) -> None:
@@ -669,6 +631,7 @@ def safe_show_image(obj: Any) -> None:
 
     st.warning(f"st.imageが扱えない型でした: {type(obj)}")
     
+#
 # ========= ① 頻出キーワード =========
 def _render_freq_block(df_use: pd.DataFrame) -> None:
     # ---- UI（横並び：表示件数 / 最低総出現回数 / カウント方式）----
@@ -713,12 +676,10 @@ def _render_freq_block(df_use: pd.DataFrame) -> None:
         fig.update_layout(margin=dict(l=10, r=10, t=40, b=10), height=420)
         st.plotly_chart(fig, use_container_width=True)
         # クイックコピー（TopN キーワード）
-        with st.expander("📋 キーワードをすぐコピー", expanded=False):
-            _render_copy_grid(freq_df["キーワード"].astype(str).tolist())
+        _render_copy_expander(freq_df["キーワード"].astype(str).tolist(), "📋 キーワードをすぐコピー")
     else:
         st.bar_chart(freq_df.set_index("キーワード")["件数"])
-        with st.expander("📋 キーワードをすぐコピー", expanded=False):
-            _render_copy_grid(freq_df["キーワード"].astype(str).tolist())
+        _render_copy_expander(freq_df["キーワード"].astype(str).tolist(), "📋 キーワードをすぐコピー")
 
     # WordCloud（任意）
     with st.expander("☁ WordCloud", expanded=False):
@@ -781,9 +742,6 @@ def _render_cooccur_block(df_use: pd.DataFrame) -> None:
     if not HAS_COMMUNITY:
         st.info("自動クラスタ色分けには networkx の community 機能が必要です。環境で利用できないため、単色表示になります。")
 
-    def _parse_kw_list(s: str) -> list[str]:
-        return [w.strip() for w in re.split(r"[,;；、，/／|｜\s　]+", str(s or "")) if w.strip()]
-
     include_list = [norm_key(x) for x in _parse_kw_list(include_raw)]
     exclude_list = [norm_key(x) for x in _parse_kw_list(exclude_raw)]
 
@@ -832,12 +790,8 @@ def _render_cooccur_block(df_use: pd.DataFrame) -> None:
     st.dataframe(edges.head(200), use_container_width=True, hide_index=True)
 
     # クイックコピー（ノード名）
-    with st.expander("📋 ノード名をすぐコピー", expanded=False):
-        if not edges.empty:
-            _nodes = sorted(set(edges["src"].astype(str)).union(set(edges["dst"].astype(str))))
-        else:
-            _nodes = []
-        _render_copy_grid(_nodes)
+    _nodes = sorted(set(edges["src"].astype(str)).union(set(edges["dst"].astype(str)))) if not edges.empty else []
+    _render_copy_expander(_nodes, "📋 ノード名をすぐコピー")
 
     with st.expander("🕸️ ネットワークを可視化", expanded=False):
         freeze_layout = st.checkbox(
@@ -893,9 +847,6 @@ def _render_trend_block(df_use: pd.DataFrame) -> None:
     yearly = yearly_keyword_counts(use)
 
     # --- 必須/除外キーワードフィルタ ---
-    def _parse_kw_list(s: str) -> list[str]:
-        return [w.strip() for w in re.split(r"[,;；、，/／|｜\s　]+", str(s or "")) if w.strip()]
-
     include_list = [norm_key(x) for x in _parse_kw_list(include_raw)]
     exclude_list = [norm_key(x) for x in _parse_kw_list(exclude_raw)]
 
@@ -950,14 +901,12 @@ def _render_trend_block(df_use: pd.DataFrame) -> None:
             fig.update_yaxes(ticksuffix="%", rangemode="tozero")
         fig.update_layout(height=520, margin=dict(l=10, r=10, t=30, b=10))
         st.plotly_chart(fig, use_container_width=True)
-        with st.expander("📋 キーワードをすぐコピー", expanded=False):
-            _legend_items = [c for c in piv.columns if c != "発行年"] if hasattr(piv, 'columns') else []
-            _render_copy_grid([str(x) for x in _legend_items])
+        _legend_items = [c for c in piv.columns if c != "発行年"] if hasattr(piv, 'columns') else []
+        _render_copy_expander(_legend_items, "📋 キーワードをすぐコピー")
     else:
         st.line_chart(piv)
-        with st.expander("📋 キーワードをすぐコピー", expanded=False):
-            _legend_items = [c for c in piv.columns if c != "発行年"] if hasattr(piv, 'columns') else []
-            _render_copy_grid([str(x) for x in _legend_items])
+        _legend_items = [c for c in piv.columns if c != "発行年"] if hasattr(piv, 'columns') else []
+        _render_copy_expander(_legend_items, "📋 キーワードをすぐコピー")
 # ========= エクスポート：タブ本体 =========
 def render_keyword_tab(df: pd.DataFrame) -> None:
     st.markdown(

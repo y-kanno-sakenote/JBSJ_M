@@ -321,8 +321,8 @@ def _yearly_counts(df: pd.DataFrame, col: str) -> pd.DataFrame:
     return c.sort_values(["発行年", "count"], ascending=[True, False]).reset_index(drop=True)
 
 def _render_trend_block(df: pd.DataFrame) -> None:
-    # 1行（2:6:2）に「対象」「表示する項目」「移動平均」を配置
-    c1, c2, c3 = st.columns([1.5, 8, 1.5])
+    # 1行に「対象」「最新年Top5自動」「表示する項目」「移動平均」を配置
+    c1, c2, c3, c4 = st.columns([1.5, 1.6, 6.6, 1.5])
 
     # 対象（左）
     with c1:
@@ -331,11 +331,50 @@ def _render_trend_block(df: pd.DataFrame) -> None:
             ["対象物_top3", "研究タイプ_top3"],
             index=0,
             key="obj_trend_mode",
-            # 表示のみ「対象物」「研究タイプ」にする（内部値は *_top3 を維持）
+            # 表示ラベルのみ変更（内部値は *_top3）
             format_func=lambda x: "対象物" if x == "対象物_top3" else ("研究タイプ" if x == "研究タイプ_top3" else str(x))
         )
 
     use = df  # 既にフィルタ済み
+
+    # 年次集計（ここで先に計算）— 最新年Top5の自動選択に利用
+    yearly = _yearly_counts(use, target_mode)
+    if yearly.empty:
+        st.info("データがありません。")
+        return
+
+    # 最新年Top5候補（存在すれば）
+    latest_year = int(yearly["発行年"].max()) if not yearly.empty else None
+    auto_top: List[str] = []
+    if latest_year is not None:
+        auto_top = (
+            yearly[yearly["発行年"] == latest_year]
+            .sort_values("count", ascending=False)[target_mode]
+            .head(5).tolist()
+        )
+
+    # 最新年Top5を自動選択トグル（中央左）
+    with c2:
+        # 見た目の整列用スペーサ（Select/MultiSelect の入力ボックス高さに揃える）
+        st.markdown('<div style="height:36px;"></div>', unsafe_allow_html=True)
+        auto_top5 = st.checkbox(
+            "最新年Top5を自動選択",
+            value=False,
+            key="obj_trend_auto5",
+            help="ONにすると、最新年の件数が多い上位5項目を右のボックスに選択状態として入れます。"
+        )
+        # --- initialize session state for selection to avoid Streamlit default+state collision ---
+        if "obj_trend_items" not in st.session_state:
+            st.session_state["obj_trend_items"] = []
+
+    # トグルON時は multiselect を最新年Top5でプリセット（セッションに直接セット）
+    # すでに同じ年で自動設定済みなら上書きしない（ユーザー編集を尊重）
+    if auto_top5 and auto_top:
+        if st.session_state.get("_obj_trend_autoset") != latest_year:
+            # いまの候補リストに存在するものだけを採用
+            # ※ all_items はこの後に計算するため、一旦仮に auto_top を保存し、後段で整合させる
+            st.session_state["obj_trend_items"] = auto_top
+            st.session_state["_obj_trend_autoset"] = latest_year
 
     # 候補抽出と順序固定（中央の multiselect で使う）
     all_items_raw = sorted({
@@ -347,34 +386,34 @@ def _render_trend_block(df: pd.DataFrame) -> None:
     else:
         all_items = _order_options(all_items_raw, TYPE_ORDER)
 
-    # 表示する項目（中央）
-    with c2:
+    # セッションに入っている選択肢を、いまの候補に整合（存在しない値を除去）
+    if "obj_trend_items" in st.session_state:
+        st.session_state["obj_trend_items"] = [x for x in st.session_state["obj_trend_items"] if x in all_items]
+
+    # 表示する項目（中央右）
+    with c3:
         sel = st.multiselect(
             "表示する項目（複数可）",
             options=all_items[:1000],
-            default=all_items[: min(0, len(all_items))],  # 既存仕様：初期は空
             key="obj_trend_items",
         )
 
-    # 移動平均（右）
-    with c3:
+    # 移動平均（右端）
+    with c4:
         ma = st.number_input(
             "移動平均（年）",
             min_value=1, max_value=7, value=1, step=1,
             key="obj_trend_ma"
         )
 
-    yearly = _yearly_counts(use, target_mode)
-    if yearly.empty:
-        st.info("データがありません。")
-        return
-
     piv = yearly.pivot_table(index="発行年", columns=target_mode, values="count", aggfunc="sum").fillna(0).sort_index()
+
+    # 現在の選択を適用（トグルON時は上で自動挿入済み）
     if sel:
         piv = piv[[c for c in sel if c in piv.columns]]
 
     if piv.shape[1] == 0:
-        st.info("表示対象がありません。左のリストから1つ以上選んでください。")
+        st.info("表示対象がありません。リストから1つ以上選んでください。")
         return
 
     if ma > 1:
@@ -428,7 +467,7 @@ def _build_cooccur_edges(df: pd.DataFrame,
     edges = edges[edges["weight"] >= int(min_edge)].sort_values("weight", ascending=False).reset_index(drop=True)
     return edges
 
-def _draw_pyvis_from_edges(edges: pd.DataFrame, height_px: int = 650) -> None:
+def _draw_pyvis_from_edges(edges: pd.DataFrame, height_px: int = 650, fixed_layout: bool = False) -> None:
     if not (HAS_NX and HAS_PYVIS):
         st.info("グラフ描画には networkx / pyvis が必要です。")
         return
@@ -473,17 +512,29 @@ def _draw_pyvis_from_edges(edges: pd.DataFrame, height_px: int = 650) -> None:
     # 5) PyVis へ
     net = Network(height=f"{height_px}px", width="100%", bgcolor="#ffffff", font_color="#222")
     # 物理＆相互作用を調整：重なり軽減・ホバー強化
-    net.set_options("""
-    {
-      "interaction": { "hover": true, "tooltipDelay": 200, "zoomView": true, "dragView": true },
-      "physics": {
-        "stabilization": { "enabled": true, "iterations": 200 },
-        "barnesHut": { "gravitationalConstant": -25000, "centralGravity": 0.2, "springLength": 140, "springConstant": 0.025, "damping": 0.4, "avoidOverlap": 0.5 }
-      },
-      "nodes": { "shape": "dot" },
-      "edges": { "smooth": { "type": "dynamic" } }
-    }
-    """)
+    if fixed_layout:
+        # 物理演算を無効化してレイアウトを固定（再描画しても位置が揺れにくい）
+        net.set_options("""
+        {
+          "interaction": { "hover": true, "tooltipDelay": 200, "zoomView": true, "dragView": true },
+          "physics": { "enabled": false },
+          "layout": { "improvedLayout": true, "randomSeed": 42 },
+          "nodes": { "shape": "dot" },
+          "edges": { "smooth": { "type": "dynamic" } }
+        }
+        """)
+    else:
+        net.set_options("""
+        {
+          "interaction": { "hover": true, "tooltipDelay": 200, "zoomView": true, "dragView": true },
+          "physics": {
+            "stabilization": { "enabled": true, "iterations": 200 },
+            "barnesHut": { "gravitationalConstant": -25000, "centralGravity": 0.2, "springLength": 140, "springConstant": 0.025, "damping": 0.4, "avoidOverlap": 0.5 }
+          },
+          "nodes": { "shape": "dot" },
+          "edges": { "smooth": { "type": "dynamic" } }
+        }
+        """)
 
     # ノード追加（サイズ=logスケール、色=コミュニティ、ラベルは上位のみ）
     # 目安: size 6〜28
@@ -526,16 +577,67 @@ def _draw_pyvis_from_edges(edges: pd.DataFrame, height_px: int = 650) -> None:
     
 def _render_cooccurrence_block(df_use: pd.DataFrame) -> None:
     # 年・対象物・研究タイプのフィルタUIは除外し、ネットワーク種別・しきい値・ノード数のみ
-    c1, c2, c3 = st.columns([1,1,1])
+    c1, c2, c3, c4, c5 = st.columns([1.2, 1.2, 1.0, 1.6, 1.6])
     with c1:
         mode = st.selectbox("ネットワークの種類", ["対象物のみ", "研究タイプのみ", "対象物×研究タイプ"], index=0, key="obj_net_mode")
     with c2:
-        min_edge = st.number_input("最低共起数（同時出現）", min_value=1, max_value=50, value=3, step=1, key="obj_net_minw")
-    with c3:
         topN = st.number_input("表示するノード数（多い順）", min_value=30, max_value=300, value=120, step=10, key="obj_net_topn")
+    with c3:
+        min_edge = st.number_input("最低共起数（同時出現）", min_value=1, max_value=50, value=3, step=1, key="obj_net_minw")
+    # 候補ノード（ネットワーク種類に応じて切替）
+    if mode == "対象物のみ":
+        cand_targets = sorted({t for v in df_use.get("対象物_top3", pd.Series(dtype=str)).fillna("") for t in split_multi(v)})
+        cand_targets = _order_options(cand_targets, TARGET_ORDER)
+        node_options = cand_targets
+    elif mode == "研究タイプのみ":
+        cand_types = sorted({t for v in df_use.get("研究タイプ_top3", pd.Series(dtype=str)).fillna("") for t in split_multi(v)})
+        cand_types = _order_options(cand_types, TYPE_ORDER)
+        node_options = cand_types
+    else:  # 対象物×研究タイプ（両方をまとめて候補に）
+        cand_targets = sorted({t for v in df_use.get("対象物_top3", pd.Series(dtype=str)).fillna("") for t in split_multi(v)})
+        cand_types   = sorted({t for v in df_use.get("研究タイプ_top3", pd.Series(dtype=str)).fillna("") for t in split_multi(v)})
+        cand_targets = _order_options(cand_targets, TARGET_ORDER)
+        cand_types   = _order_options(cand_types, TYPE_ORDER)
+        node_options = cand_targets + [x for x in cand_types if x not in cand_targets]
+    with c4:
+        include_terms = st.multiselect(
+            "必須（選択式）",
+            options=node_options,
+            default=[],
+            key="obj_net_include_sel",
+            help="ここで選んだ語を少なくとも1つ含むノードだけを残します。"
+        )
+    with c5:
+        exclude_terms = st.multiselect(
+            "除外（選択式）",
+            options=node_options,
+            default=[],
+            key="obj_net_exclude_sel",
+            help="ここで選んだ語に該当するノードは除外します。"
+        )
 
     use = df_use
     edges = _build_cooccur_edges(use, mode, int(min_edge))
+
+    # --- 必須／除外（エッジレベルで適用） ---
+    if not edges.empty and (include_terms or exclude_terms):
+        e = edges.copy()
+        if include_terms:
+            incl_set = set(include_terms)
+            # 少なくとも一方が必須語に含まれるエッジだけ残す（OR条件）
+            e = e[(e["src"].isin(incl_set)) | (e["dst"].isin(incl_set))]
+        if exclude_terms:
+            excl_set = set(exclude_terms)
+            # どちらかが除外語に含まれるエッジは捨てる
+            e = e[~(e["src"].isin(excl_set) | e["dst"].isin(excl_set))]
+        edges = e.reset_index(drop=True)
+
+        # 残ったエッジに登場するノードだけに限定（後続の topN 処理のため）
+        if not edges.empty:
+            used_nodes = set(edges["src"].astype(str)).union(set(edges["dst"].astype(str)))
+            edges = edges[edges["src"].isin(used_nodes) & edges["dst"].isin(used_nodes)].reset_index(drop=True)
+
+    # --- ノード上限（多い順）を適用 ---
     if not edges.empty and int(topN) > 0:
         deg = pd.concat([edges.groupby("src")["weight"].sum(),
                          edges.groupby("dst")["weight"].sum()], axis=1).fillna(0).sum(axis=1)
@@ -547,9 +649,16 @@ def _render_cooccurrence_block(df_use: pd.DataFrame) -> None:
 
     # 2) ネットワーク描画
     with st.expander("🕸️ ネットワークを可視化", expanded=False):
+        # 可視化専用オプション：レイアウト固定（物理演算を止める）
+        fix_layout = st.checkbox(
+            "レイアウトを固定",
+            value=False,
+            key="obj_net_fix_layout",
+            help="ONにすると、物理演算を止めてノード位置を固定します。大規模ネットワークでの“ブルブル”を抑え、再描画しても位置が揺れにくくなります。"
+        )
         if HAS_PYVIS and HAS_NX:
             if st.button("🌐 描画する", key="obj_net_draw"):
-                _draw_pyvis_from_edges(edges, height_px=680)
+                _draw_pyvis_from_edges(edges, height_px=680, fixed_layout=fix_layout)
         else:
             st.info("networkx / pyvis が未導入のため、表のみ表示しています。")
 
