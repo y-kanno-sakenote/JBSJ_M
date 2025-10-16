@@ -139,6 +139,7 @@ def _count_series(df: pd.DataFrame, col: str) -> pd.Series:
     s = pd.Series(bags)
     return s.value_counts().sort_values(ascending=False)
 
+
 @st.cache_data(ttl=600, show_spinner=False)
 def _cross_counts(df: pd.DataFrame, col_a: str, col_b: str) -> pd.DataFrame:
     """A×Bのクロス件数（同一論文内で全組合せをカウント）"""
@@ -157,36 +158,93 @@ def _cross_counts(df: pd.DataFrame, col_a: str, col_b: str) -> pd.DataFrame:
     return c.sort_values("count", ascending=False).reset_index(drop=True)
 
 
+# ==== 新規ユーティリティ ====
+
+def _split_and_count_series(df: pd.DataFrame, col: str, x_name: str, y_name: str) -> pd.DataFrame:
+    """
+    指定列（; / ・空白区切り）を分解→頻度集計→降順のDataFrameを返す。
+    戻り: [x_name, y_name]
+    """
+    if col not in df.columns:
+        return pd.DataFrame(columns=[x_name, y_name])
+    series = (
+        df.get(col, pd.Series(dtype=str))
+          .fillna("")
+          .apply(lambda s: [w.strip() for w in re.split(r"[;；,、，/／|｜\s　]+", str(s)) if w.strip()])
+    )
+    flat = [w for lst in series for w in lst]
+    if not flat:
+        return pd.DataFrame(columns=[x_name, y_name])
+    s = pd.Series(flat, dtype="object").value_counts()
+    out = s.reset_index()
+    out.columns = [x_name, y_name]
+    return out.sort_values(y_name, ascending=False)
+
+
+def _px_bar_count(df_xy: pd.DataFrame, x_col: str, y_col: str, title: str):
+    """
+    Plotlyが使える場合に件数バーを統一スタイルで返す（なければNone）。
+    """
+    if not HAS_PX:
+        return None
+    try:
+        import plotly.express as px  # 遅延import
+        fig = px.bar(
+            df_xy,
+            x=x_col,
+            y=y_col,
+            text_auto=True,
+            title=title,
+        )
+        fig.update_layout(margin=dict(l=10, r=10, t=40, b=10), height=420, yaxis_title=y_col)
+        fig.update_xaxes(tickangle=45, automargin=True)
+        return fig
+    except Exception:
+        return None
+
+
+def _ordered_index_and_columns(piv: pd.DataFrame) -> tuple[list[str], list[str]]:
+    """
+    ヒートマップ用に index/columns の表示順を TARGET_ORDER / TYPE_ORDER で整列し、
+    未定義カテゴリは末尾で五十音（アルファベット）順にする。
+    行=研究タイプ、列=対象物 を想定。
+    戻り: (idx_order, cols_order)
+    """
+    cols = list(piv.columns)
+    idxs  = list(piv.index)
+    cols_order = [x for x in TARGET_ORDER if x in cols] + sorted([x for x in cols if x not in TARGET_ORDER])
+    idx_order  = [x for x in TYPE_ORDER   if x in idxs] + sorted([x for x in idxs if x not in TYPE_ORDER])
+    return idx_order, cols_order
+
+
+def _node_options_for_mode(df_use: pd.DataFrame, mode: str) -> list[str]:
+    """
+    ネットワーク種類に応じたノード候補（指定順で並び替え）。
+    """
+    if mode == "対象物のみ":
+        cand = sorted({t for v in df_use.get("対象物_top3", pd.Series(dtype=str)).fillna("") for t in split_multi(v)})
+        return _order_options(cand, TARGET_ORDER)
+    elif mode == "研究タイプのみ":
+        cand = sorted({t for v in df_use.get("研究タイプ_top3", pd.Series(dtype=str)).fillna("") for t in split_multi(v)})
+        return _order_options(cand, TYPE_ORDER)
+    else:
+        cand_tg = sorted({t for v in df_use.get("対象物_top3", pd.Series(dtype=str)).fillna("") for t in split_multi(v)})
+        cand_tp = sorted({t for v in df_use.get("研究タイプ_top3", pd.Series(dtype=str)).fillna("") for t in split_multi(v)})
+        cand_tg = _order_options(cand_tg, TARGET_ORDER)
+        cand_tp = _order_options(cand_tp, TYPE_ORDER)
+        return cand_tg + [x for x in cand_tp if x not in cand_tg]
+
+
 def _render_distribution_block(df: pd.DataFrame) -> None:
     # Small subheading style for inline subttls
     st.markdown("<style>.subttl{font-size:0.95rem; opacity:0.75; margin:0 0 0.25rem;}</style>", unsafe_allow_html=True)
 
     # ---- 対象物集計 ----
-    tg_series = (
-        df.get("対象物_top3", pd.Series(dtype=str))
-          .fillna("")
-          .apply(lambda s: [w.strip() for w in re.split(r"[;；,、，/／|｜\s　]+", str(s)) if w.strip()])
-    )
-    tg_flat = [w for lst in tg_series for w in lst]
-    tg_counts = pd.Series(tg_flat, dtype="object").value_counts()
-    tg_df = tg_counts.reset_index()
-    tg_df.columns = ["対象物", "件数"]
-    tg_df = tg_df.sort_values("件数", ascending=False)
+    tg_df = _split_and_count_series(df, "対象物_top3", "対象物", "件数")
+    tg_total = int(tg_df["件数"].sum()) if not tg_df.empty else 0
 
     # ---- 研究タイプ集計 ----
-    tp_series = (
-        df.get("研究タイプ_top3", pd.Series(dtype=str))
-          .fillna("")
-          .apply(lambda s: [w.strip() for w in re.split(r"[;；,、，/／|｜\s　]+", str(s)) if w.strip()])
-    )
-    tp_flat = [w for lst in tp_series for w in lst]
-    tp_counts = pd.Series(tp_flat, dtype="object").value_counts()
-    tp_df = tp_counts.reset_index()
-    tp_df.columns = ["研究タイプ", "件数"]
-    tp_df = tp_df.sort_values("件数", ascending=False)
-
-    # 合計件数を計算
-    tg_total = int(tg_df["件数"].sum()) if not tg_df.empty else 0
+    tp_df = _split_and_count_series(df, "研究タイプ_top3", "研究タイプ", "件数")
     tp_total = int(tp_df["件数"].sum()) if not tp_df.empty else 0
 
     if tg_df.empty and tp_df.empty:
@@ -198,38 +256,20 @@ def _render_distribution_block(df: pd.DataFrame) -> None:
         if tg_df.empty:
             st.info("該当データがありません。フィルタを調整してください。")
         else:
-            try:
-                import plotly.express as px  # 遅延import
-                fig = px.bar(
-                    tg_df,
-                    x="対象物",
-                    y="件数",
-                    text_auto=True,
-                    title=f"対象物の出現件数（合計: {tg_total:,}件）",
-                )
-                fig.update_layout(margin=dict(l=10, r=10, t=40, b=10), height=420, yaxis_title="件数")
-                fig.update_xaxes(tickangle=45, automargin=True)
+            fig = _px_bar_count(tg_df, "対象物", "件数", f"対象物の出現件数（合計: {tg_total:,}件）")
+            if fig is not None:
                 st.plotly_chart(fig, use_container_width=True)
-            except Exception:
+            else:
                 st.bar_chart(tg_df.set_index("対象物")["件数"])
 
     with c2:
         if tp_df.empty:
             st.info("該当データがありません。フィルタを調整してください。")
         else:
-            try:
-                import plotly.express as px
-                fig2 = px.bar(
-                    tp_df,
-                    x="研究タイプ",
-                    y="件数",
-                    text_auto=True,
-                    title=f"研究タイプの出現件数（合計: {tp_total:,}件）",
-                )
-                fig2.update_layout(margin=dict(l=10, r=10, t=40, b=10), height=420, yaxis_title="件数")
-                fig2.update_xaxes(tickangle=45, automargin=True)
+            fig2 = _px_bar_count(tp_df, "研究タイプ", "件数", f"研究タイプの出現件数（合計: {tp_total:,}件）")
+            if fig2 is not None:
                 st.plotly_chart(fig2, use_container_width=True)
-            except Exception:
+            else:
                 st.bar_chart(tp_df.set_index("研究タイプ")["件数"])
 
 
@@ -248,8 +288,7 @@ def _render_cross_block(df: pd.DataFrame) -> None:
     piv.columns.name = "対象物"
 
     # 並び順を固定（指定順 → 未定義カテゴリは後尾で五十音/アルファベット順）
-    cols_order = [x for x in TARGET_ORDER if x in piv.columns] + sorted([x for x in piv.columns if x not in TARGET_ORDER])
-    idx_order  = [x for x in TYPE_ORDER   if x in piv.index  ] + sorted([x for x in piv.index  if x not in TYPE_ORDER])
+    idx_order, cols_order = _ordered_index_and_columns(piv)
     piv = piv.reindex(index=idx_order, columns=cols_order)
 
     # 下部に配置するチェックボックスの現在値をセッションから参照（初期は False）
@@ -585,20 +624,7 @@ def _render_cooccurrence_block(df_use: pd.DataFrame) -> None:
     with c3:
         min_edge = st.number_input("最低共起数（同時出現）", min_value=1, max_value=50, value=3, step=1, key="obj_net_minw")
     # 候補ノード（ネットワーク種類に応じて切替）
-    if mode == "対象物のみ":
-        cand_targets = sorted({t for v in df_use.get("対象物_top3", pd.Series(dtype=str)).fillna("") for t in split_multi(v)})
-        cand_targets = _order_options(cand_targets, TARGET_ORDER)
-        node_options = cand_targets
-    elif mode == "研究タイプのみ":
-        cand_types = sorted({t for v in df_use.get("研究タイプ_top3", pd.Series(dtype=str)).fillna("") for t in split_multi(v)})
-        cand_types = _order_options(cand_types, TYPE_ORDER)
-        node_options = cand_types
-    else:  # 対象物×研究タイプ（両方をまとめて候補に）
-        cand_targets = sorted({t for v in df_use.get("対象物_top3", pd.Series(dtype=str)).fillna("") for t in split_multi(v)})
-        cand_types   = sorted({t for v in df_use.get("研究タイプ_top3", pd.Series(dtype=str)).fillna("") for t in split_multi(v)})
-        cand_targets = _order_options(cand_targets, TARGET_ORDER)
-        cand_types   = _order_options(cand_types, TYPE_ORDER)
-        node_options = cand_targets + [x for x in cand_types if x not in cand_targets]
+    node_options = _node_options_for_mode(df_use, mode)
     with c4:
         include_terms = st.multiselect(
             "必須（選択式）",
@@ -623,19 +649,12 @@ def _render_cooccurrence_block(df_use: pd.DataFrame) -> None:
     if not edges.empty and (include_terms or exclude_terms):
         e = edges.copy()
         if include_terms:
-            incl_set = set(include_terms)
-            # 少なくとも一方が必須語に含まれるエッジだけ残す（OR条件）
-            e = e[(e["src"].isin(incl_set)) | (e["dst"].isin(incl_set))]
+            incl = set(include_terms)
+            e = e[(e["src"].isin(incl)) | (e["dst"].isin(incl))]
         if exclude_terms:
-            excl_set = set(exclude_terms)
-            # どちらかが除外語に含まれるエッジは捨てる
-            e = e[~(e["src"].isin(excl_set) | e["dst"].isin(excl_set))]
+            excl = set(exclude_terms)
+            e = e[~(e["src"].isin(excl) | e["dst"].isin(excl))]
         edges = e.reset_index(drop=True)
-
-        # 残ったエッジに登場するノードだけに限定（後続の topN 処理のため）
-        if not edges.empty:
-            used_nodes = set(edges["src"].astype(str)).union(set(edges["dst"].astype(str)))
-            edges = edges[edges["src"].isin(used_nodes) & edges["dst"].isin(used_nodes)].reset_index(drop=True)
 
     # --- ノード上限（多い順）を適用 ---
     if not edges.empty and int(topN) > 0:
