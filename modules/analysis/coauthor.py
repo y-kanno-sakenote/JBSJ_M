@@ -42,6 +42,15 @@ try:
 except Exception:
     HAS_PYVIS = False
 
+# --- Optional: pykakasi (日本語の読み変換) ---
+try:
+    from pykakasi import kakasi  # type: ignore
+    _KKS = kakasi(); _KKS.setMode('J', 'H'); _KKS.setMode('K', 'H'); _KKS.setMode('H', 'H');
+    HAS_KAKASI = True
+except Exception:
+    HAS_KAKASI = False
+    _KKS = None  # type: ignore
+
 # --- 永続キャッシュIO（あれば使う・無くても動く） ---
 try:
     from modules.common.cache_utils import cache_csv_path, load_csv_if_exists, save_csv
@@ -67,6 +76,24 @@ def _sort_with_order(items: List[str], order: List[str]) -> List[str]:
     order_map = {name: i for i, name in enumerate(order)}
     # 未定義項目は末尾・元の名前順
     return sorted(items, key=lambda x: (order_map.get(x, len(order)), x))
+
+# ==== 著者ラベル・読み変換ヘルパ ====
+def _reading_hiragana(text: str) -> str:
+    """Return hiragana reading using pykakasi if available; otherwise empty string."""
+    if not text:
+        return ""
+    if not HAS_KAKASI or _KKS is None:
+        return ""
+    try:
+        conv = _KKS.getConverter()
+        return conv.do(str(text))
+    except Exception:
+        return ""
+
+def _author_label(name: str) -> str:
+    """Display label for author options: 漢字｜よみ (if reading available)."""
+    yomi = _reading_hiragana(name)
+    return f"{name}｜{yomi}" if yomi else str(name)
 
 
 # ========= 基本ユーティリティ =========
@@ -327,7 +354,8 @@ def _yearly_author_counts(df: pd.DataFrame) -> pd.DataFrame:
 def _draw_network(edges: pd.DataFrame,
                   top_nodes: List[str] | None = None,
                   min_weight: int = 1,
-                  height_px: int = 650) -> None:
+                  height_px: int = 650,
+                  physics_enabled: bool = True) -> None:
     """PyVisで描画。依存が無ければスキップ。"""
     if not (HAS_NX and HAS_PYVIS):
         st.info("グラフ描画には networkx / pyvis が必要です。表は利用できます。")
@@ -393,42 +421,42 @@ def _draw_network(edges: pd.DataFrame,
     net = Network(height=f"{height_px}px", width="100%", bgcolor="#ffffff", font_color="#222")
     # 物理・描画オプション（JSON 文字列として渡す：無効な JSON を避ける）
     net.set_options(
-        """
-        {
-          "physics": {
-            "enabled": true,
-            "barnesHut": {
+        f"""
+        {{
+          "physics": {{
+            "enabled": {"true" if physics_enabled else "false"},
+            "barnesHut": {{
               "gravitationalConstant": -30000,
               "centralGravity": 0.25,
               "springLength": 110,
               "springConstant": 0.02,
               "damping": 0.30
-            },
+            }},
             "minVelocity": 0.75,
             "solver": "barnesHut",
-            "stabilization": {
+            "stabilization": {{
               "enabled": true,
               "fit": true,
               "iterations": 800
-            }
-          },
-          "interaction": {
+            }}
+          }},
+          "interaction": {{
             "hover": true,
             "tooltipDelay": 120,
             "zoomView": true,
             "dragView": true
-          },
-          "nodes": {
+          }},
+          "nodes": {{
             "shape": "dot",
             "borderWidth": 1
-          },
-          "edges": {
-            "smooth": {
+          }},
+          "edges": {{
+            "smooth": {{
               "type": "continuous",
               "roundness": 0.2
-            }
-          }
-        }
+            }}
+          }}
+        }}
         """
     )
 
@@ -721,8 +749,20 @@ def render_coauthor_tab(df: pd.DataFrame, use_disk_cache: bool = False):
 
     # ===== ② 共著ネットワーク（既存ロジックをそのまま） =====
     with tab_network:
-        # メトリック・ランキング件数・最小共著回数 のみ
-        c4, c5, c6 = st.columns([1,1,1])
+        # オートコンプリート用：著者候補（頻度上位から最大600件）
+        try:
+            _auth_freq = _author_total_counts(df_use)
+            _author_names = _auth_freq.index.tolist()[:600]
+        except Exception:
+            _bags = []
+            for a in df_use.get("著者", pd.Series(dtype=str)).fillna(""):
+                _bags.extend(split_authors(a))
+            _author_names = sorted(list(dict.fromkeys(_bags)))[:600]
+        # 表示は「漢字｜よみ」。検索は読みでも可（Streamlitは表示文字列で検索）
+        _author_labels = [_author_label(n) for n in _author_names]
+        _label_to_name = {lbl: nm for lbl, nm in zip(_author_labels, _author_names)}
+        # メトリック・ランキング件数・最小共著回数・必須・除外
+        c4, c5, c6, c7, c8 = st.columns([1,1,1,2,2])
         with c4:
             metric = st.selectbox(
                 "中心性指標",
@@ -740,6 +780,24 @@ def render_coauthor_tab(df: pd.DataFrame, use_disk_cache: bool = False):
             top_n = st.number_input("ランキング件数", min_value=5, max_value=100, value=30, step=5, key="res_net_topn")
         with c6:
             min_w = st.number_input("描画する最小共著回数 (w≥)", min_value=1, max_value=20, value=2, step=1, key="res_net_minw")
+        with c7:
+            must_sel_labels = st.multiselect(
+                "必須（著者名・サジェスト/読みで検索可）",
+                options=_author_labels,
+                default=[],
+                key="res_net_must_ms",
+                help="『山田太郎』『やまだ』どちらでも絞り込めます。ここで選んだ著者がどちらか一方でも含まれるエッジだけを残します。"
+            )
+            must_sel = [_label_to_name.get(x, x) for x in must_sel_labels]
+        with c8:
+            excl_sel_labels = st.multiselect(
+                "除外（著者名・サジェスト/読みで検索可）",
+                options=_author_labels,
+                default=[],
+                key="res_net_excl_ms",
+                help="選んだ著者（漢字 or よみ）に関わるエッジを除外します。"
+            )
+            excl_sel = [_label_to_name.get(x, x) for x in excl_sel_labels]
 
         # エッジ構築（ディスクキャッシュは従来どおり利用可）
         _tg_key = ",".join(tg_sel) if tg_sel else ""
@@ -756,6 +814,16 @@ def render_coauthor_tab(df: pd.DataFrame, use_disk_cache: bool = False):
             if use_disk_cache and HAS_DISK_CACHE:
                 save_csv(edges, cache_csv_path("coauthor_edges", cache_key))
 
+        # --- 必須／除外（サジェスト選択）フィルタをエッジに適用 ---
+        if edges is not None and not edges.empty:
+            if must_sel:
+                ms = set(must_sel)
+                edges = edges[edges.apply(lambda r: (r["src"] in ms) or (r["dst"] in ms), axis=1)]
+            if excl_sel:
+                es = set(excl_sel)
+                edges = edges[~edges.apply(lambda r: (r["src"] in es) or (r["dst"] in es), axis=1)]
+            edges = edges.reset_index(drop=True)
+
         if edges.empty:
             st.info("共著関係が見つかりませんでした。条件を調整してください。")
         else:
@@ -770,14 +838,25 @@ def render_coauthor_tab(df: pd.DataFrame, use_disk_cache: bool = False):
             rank = centrality_from_edges(edges, metric=metric).head(int(top_n))
             st.dataframe(rank, use_container_width=True, hide_index=True)
             st.caption("※ 指標の意味：次数=つながりの数 / 媒介=橋渡し度 / 固有ベクトル=影響力（有力者との結び付き）")
+            st.caption("※ ‘必須/除外’ は著者名をタイプすると候補が出ます。選択した著者を含む（/含むものを除く）エッジでネットワークを作ります。")
             with st.expander("📋 著者名をすぐコピー", expanded=False):
                 _render_copy_grid(rank["著者"].tolist())
 
             with st.expander("🕸️ ネットワークを可視化", expanded=False):
-                top_only = st.toggle("上位ランキングの周辺だけ表示", value=True, key="res_net_toponly")
-                top_nodes = rank["著者"].tolist() if top_only else None
+                vc1, vc2 = st.columns([1,1])
+                with vc1:
+                    top_only_cb = st.checkbox("上位ランキングの周辺だけ表示", value=True, key="res_net_toponly_cb")
+                with vc2:
+                    fixed_layout = st.checkbox("レイアウトを固定", value=False, key="res_net_fixed")
                 if st.button("🌐 描画する", key="res_net_draw"):
-                    _draw_network(edges, top_nodes=top_nodes, min_weight=int(min_w), height_px=700)
+                    top_nodes = rank["著者"].tolist() if top_only_cb else None
+                    _draw_network(
+                        edges,
+                        top_nodes=top_nodes,
+                        min_weight=int(min_w),
+                        height_px=700,
+                        physics_enabled=(not fixed_layout)
+                    )
 
     # ===== ③ トレンド分析（論文数の年次推移） =====
     with tab_trend:
