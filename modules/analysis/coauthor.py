@@ -69,6 +69,12 @@ _HEADER_HTML = """
 </div>
 """
 
+# ---- Shared palette (table & network use the same colors) ----
+_PALETTE = [
+    "#4c78a8", "#f58518", "#54a24b", "#e45756", "#72b7b2",
+    "#b279a2", "#ff9da6", "#9d755d", "#bab0ac", "#8c6d31"
+]
+
 
 # ========= 並び順（temporal.py と統一） & 補助ソート関数 =========
 TARGET_ORDER = [
@@ -315,6 +321,8 @@ def centrality_from_edges(edges: pd.DataFrame, metric: str = "degree") -> pd.Dat
     cen_df = pd.Series(cen, name="つながりスコア").reset_index().rename(columns={"index": "著者"})
     out = pd.merge(cen_df, deg_simple, on="著者", how="left")
     out["共著数"] = out["共著数"].fillna(0).astype(float)
+    # 表示用途では整数に丸める
+    out["共著数"] = out["共著数"].round().astype(int)
     return out[["著者", "共著数", "つながりスコア"]].sort_values("つながりスコア", ascending=False).reset_index(drop=True)
 
 
@@ -370,7 +378,8 @@ def _draw_network(edges: pd.DataFrame,
                   top_nodes: List[str] | None = None,
                   min_weight: int = 1,
                   height_px: int = 650,
-                  physics_enabled: bool = True) -> None:
+                  physics_enabled: bool = True,
+                  node_color_map: dict | None = None) -> None:
     """PyVisで描画。依存が無ければスキップ。"""
     if not (HAS_NX and HAS_PYVIS):
         st.info("グラフ描画には networkx / pyvis が必要です。表は利用できます。")
@@ -414,22 +423,24 @@ def _draw_network(edges: pd.DataFrame,
     # ラベルは強いノード上位だけ表示（混雑回避）
     label_top = set(sorted(G.nodes(), key=lambda x: strength.get(x, 0.0), reverse=True)[:40])
 
-    # --- コミュニティ（色分け）：失敗時は単色 ---
-    try:
-        from networkx.algorithms.community import greedy_modularity_communities
-        comms = list(greedy_modularity_communities(G, weight="weight"))
-        comm_id = {}
+    # --- コミュニティ（色分け） ---
+    local_comm_id = None
+    if node_color_map is None:
+        # 必要なときだけローカルで推定
+        try:
+            # Prefer Louvain with a higher resolution to get finer (more) clusters
+            from networkx.algorithms.community import louvain_communities
+            comms = list(louvain_communities(G, weight="weight", resolution=1.6))
+        except Exception:
+            # Fallback to greedy modularity (no resolution control)
+            from networkx.algorithms.community import greedy_modularity_communities
+            comms = list(greedy_modularity_communities(G, weight="weight"))
+        _tmp = {}
         for i, cset in enumerate(comms):
             for n in cset:
-                comm_id[n] = i
-    except Exception:
-        comm_id = {n: 0 for n in G.nodes()}
+                _tmp[n] = i
+        local_comm_id = _tmp
 
-    # カラーパレット（循環）
-    palette = [
-        "#4c78a8", "#f58518", "#54a24b", "#e45756", "#72b7b2",
-        "#b279a2", "#ff9da6", "#9d755d", "#bab0ac", "#8c6d31"
-    ]
 
     # --- PyVisへ流し込み（カスタム属性を反映） ---
     net = Network(height=f"{height_px}px", width="100%", bgcolor="#ffffff", font_color="#222")
@@ -479,9 +490,18 @@ def _draw_network(edges: pd.DataFrame,
         wsum = strength.get(n, 0.0)
         size = 8.0 + 4.0 * math.log1p(wsum)  # 線形だと極端になりやすいので log
         title = f"{n}｜総共著重み: {int(wsum)}"
-        color = palette[comm_id.get(n, 0) % len(palette)]
+        # 1) 事前計算の色（表のクラスタと一致）を優先
+        color = None
+        if node_color_map is not None:
+            color = node_color_map.get(n)
+        # 2) 無ければローカルのクラスタ色にフォールバック
+        if color is None:
+            cid = 0
+            if isinstance(local_comm_id, dict):
+                cid = int(local_comm_id.get(n, 0))
+            color = _PALETTE[cid % len(_PALETTE)]
         label = n if n in label_top else ""  # 上位だけラベル
-        net.add_node(n, label=label, title=title, size=size, color=color)
+        net.add_node(n, label=label, title=title, size=size, color=color, borderWidth=0)
 
     # エッジ追加（太さ=log1p(weight)、ホバーで回数表示）
     for u, v, d in G.edges(data=True):
@@ -832,18 +852,186 @@ def render_coauthor_tab(df: pd.DataFrame, use_disk_cache: bool = False):
         if edges.empty:
             st.info("共著関係が見つかりませんでした。条件を調整してください。")
         else:
+            # --- ノード色マップ（ネットワーク描画と同期用） ---
+            node_color_map = None
             st.markdown(
                 """
                 <div style="display:flex; align-items:center; gap:6px; margin:6px 0 2px 0;">
-                  <span style="font-weight:600; font-size:0.95rem; opacity:0.9;">🔝 研究者のつながりランキング</span>
+                  <span style="font-weight:600; font-size:0.95rem; opacity:0.9;">🔝 研究者ネットワーク要約（クラスタ色連動）</span>
                 </div>
                 """,
                 unsafe_allow_html=True,
             )
             rank = centrality_from_edges(edges, metric=metric).head(int(top_n))
-            st.dataframe(rank, use_container_width=True, hide_index=True)
             st.caption("※ 指標の意味：次数=つながりの数 / 媒介=橋渡し度 / 固有ベクトル=影響力（有力者との結び付き）")
             st.caption("※ ‘必須/除外’ は著者名をタイプすると候補が出ます。選択した著者を含む（/含むものを除く）エッジでネットワークを作ります。")
+
+            # --- 中心著者＋近傍サマリー（クラスタ色と連動） ---
+            try:
+                # 1) しきい値を適用したエッジでNetworkXグラフを構築
+                _edges_for_summary = edges[edges["weight"] >= int(min_w)].copy()
+                Gsum = nx.Graph()
+                for _, r in _edges_for_summary.iterrows():
+                    Gsum.add_edge(str(r["src"]), str(r["dst"]), weight=float(r["weight"]))
+                # ノードが無ければスキップ
+                if Gsum.number_of_nodes() > 0:
+                    # 2) クラスタ（コミュニティ）推定
+                    try:
+                        # Prefer Louvain with a higher resolution to get finer (more) clusters
+                        from networkx.algorithms.community import louvain_communities
+                        _comms = list(louvain_communities(Gsum, weight="weight", resolution=1.3))
+                    except Exception:
+                        # Fallback to greedy modularity if Louvain is unavailable
+                        from networkx.algorithms.community import greedy_modularity_communities
+                        _comms = list(greedy_modularity_communities(Gsum, weight="weight"))
+                    _comm_id = {}
+                    for i, cset in enumerate(_comms):
+                        for n in cset:
+                            _comm_id[n] = i
+
+                    # 3) 中心著者（ランキング上位）ごとに近傍要約
+                    _central_nodes = rank["著者"].tolist()
+                    _rows = []
+                    for author in _central_nodes:
+                        if author not in Gsum:
+                            # グラフにいない場合はスキップ
+                            continue
+                        # 直接の共著者と重み
+                        partners = []
+                        for nbr in Gsum.neighbors(author):
+                            w = float(Gsum[author][nbr].get("weight", 1.0))
+                            partners.append((nbr, w))
+                        partners.sort(key=lambda x: (-x[1], x[0]))
+                        uniq_partners = [p for p, _ in partners]
+                        top_partners = uniq_partners[:3]
+
+                        # 代表論文タイトル（author と top_partners のいずれかが同時に含まれるレコード）
+                        titles = []
+                        # タイトル候補となる列名を順に探索
+                        _title_cols = ["タイトル", "論文タイトル", "title", "Title", "題名"]
+                        for _, rr in df_use.iterrows():
+                            names = list(dict.fromkeys(split_authors(rr.get("著者", ""))))
+                            if (author in names) and any(tp in names for tp in top_partners):
+                                t = ""
+                                for _c in _title_cols:
+                                    if _c in rr and pd.notna(rr[_c]) and str(rr[_c]).strip():
+                                        t = str(rr[_c]).strip()
+                                        break
+                                if t:
+                                    titles.append(t)
+                            if len(titles) >= 3:
+                                break
+                        # クラスタ色
+                        cid = int(_comm_id.get(author, 0))
+                        ccolor = _PALETTE[cid % len(_PALETTE)]
+
+                        _rows.append({
+                            "cluster_id": cid,
+                            "cluster_color": ccolor,
+                            "cluster": " ",  # 色塗り用の小セル
+                            "中心著者": author,
+                            "相手著者数": len(set(uniq_partners)),
+                            "代表相手（上位3名）": "／".join(top_partners),
+                            "example_titles": "／".join(titles)
+                        })
+
+                    if _rows:
+                        _sum_df = pd.DataFrame(
+                            _rows,
+                            columns=[
+                                "cluster",
+                                "中心著者",
+                                "相手著者数",
+                                "代表相手（上位3名）",
+                                "example_titles",
+                                "cluster_id",
+                                "cluster_color",
+                            ],
+                        )
+
+                        # rank（上位）の「共著数」を結合して、列名・順序をユーザー指定に揃える
+                        _rank_for_merge = rank[["著者", "共著数"]].rename(columns={"著者": "中心著者"})
+                        _merged = pd.merge(_sum_df, _rank_for_merge, on="中心著者", how="left")
+
+                        # 表示列: cluster, 著者, 共著数, 相手著者数, 代表相手（上位3名）, 論文例
+                        _disp = _merged.rename(columns={"中心著者": "著者", "example_titles": "論文例"}).copy()
+                        # ノード色マップ（著者 -> クラスタ色）：ネットワーク描画と同期用
+                        node_color_map = {str(a): str(c) for a, c in _merged[["中心著者", "cluster_color"]].dropna().values}
+                        _disp = _disp[["cluster", "著者", "共著数", "相手著者数", "代表相手（上位3名）", "論文例"]]
+
+                        # 型整形：整数に（見やすさ優先）
+                        _disp["共著数"] = _disp["共著数"].fillna(0).astype(int)
+                        _disp["相手著者数"] = _disp["相手著者数"].fillna(0).astype(int)
+
+                        # === Cluster 表現：色の四角（SVG画像, data URI）を表示 ===
+                        def _color_square_data_uri(hex_color: str, size: int = 16) -> str:
+                            """Generate a data URI for a small colored SVG square."""
+                            import base64
+                            svg = (
+                                f"<svg xmlns='http://www.w3.org/2000/svg' width='{size}' height='{size}'><rect width='{size}' height='{size}' fill='{hex_color}' rx='3' ry='3'/></svg>"
+                            )
+                            b64 = base64.b64encode(svg.encode("utf-8")).decode("ascii")
+                            return f"data:image/svg+xml;base64,{b64}"
+
+                        _disp = _merged.rename(columns={"中心著者": "著者", "example_titles": "論文例"}).copy()
+                        _disp["cluster_img"] = _merged["cluster_color"].map(lambda c: _color_square_data_uri(c))
+                        _disp = _disp[["cluster_img", "著者", "共著数", "相手著者数", "代表相手（上位3名）", "論文例"]]
+                        # 型整形：整数に（見やすさ優先）
+                        _disp["共著数"] = _disp["共著数"].fillna(0).astype(int)
+                        _disp["相手著者数"] = _disp["相手著者数"].fillna(0).astype(int)
+                        # Rename cluster_img to cluster for table column name
+                        _disp = _disp.rename(columns={"cluster_img": "cluster"})
+
+                        # 見出し
+                        st.markdown(
+                            "<div style='display:flex; align-items:center; gap:6px; margin:10px 0 4px 0;'>"
+                            "<span style='font-weight:600; font-size:0.95rem; opacity:0.9;'>🧭 中心著者サマリー（cluster色連動）</span>"
+                            "</div>",
+                            unsafe_allow_html=True,
+                        )
+                        st.markdown("<style>.stDataFrame [data-testid='stImage'] img { display:block; margin:auto; }</style>", unsafe_allow_html=True)
+                        st.dataframe(
+                            _disp,
+                            column_config={
+                                "cluster": st.column_config.ImageColumn(
+                                    "cluster",
+                                    help="クラスタ色（ネットワークと同期）",
+                                    width="small",
+                                ),
+                            },
+                            use_container_width=True,
+                            hide_index=True,
+                        )
+
+                        # === クラスタ凡例（C1, C2 ... + 件数） ===
+                        # クラスタサイズで並べ替えて C1, C2 ... を付与
+                        _size_by_cluster = (
+                            _merged.groupby("cluster_id").size().reset_index(name="size").sort_values("size", ascending=False)
+                        )
+                        _cid_to_rank = {int(cid): i + 1 for i, cid in enumerate(_size_by_cluster["cluster_id"].tolist())}
+
+                        _legend_parts = [
+                            "<div style='display:flex; align-items:center; gap:10px; flex-wrap:wrap; margin:6px 0 2px 0;'>",
+                            "<span style='font-weight:700;'>クラスター凡例</span>",
+                        ]
+                        for _, rr in _size_by_cluster.merge(
+                            _merged[["cluster_id", "cluster_color"]].drop_duplicates(), on="cluster_id", how="left"
+                        ).iterrows():
+                            rank_no = _cid_to_rank.get(int(rr["cluster_id"]), 0)
+                            color = rr["cluster_color"]
+                            count = int(rr["size"])  # 著者数
+                            _legend_parts.append(
+                                f"<span style='display:inline-flex; align-items:center; gap:6px;'>"
+                                f"<span style='display:inline-block; width:12px; height:12px; background:{color}; border-radius:2px;'></span>"
+                                f"<span style='font-size:13px; opacity:0.9;'>C{rank_no}（{count}名）</span>"
+                                f"</span>"
+                            )
+                        _legend_parts.append("</div>")
+                        st.markdown("".join(_legend_parts), unsafe_allow_html=True)
+            except Exception as _e:
+                # サマリーは補助情報なので、失敗してもアプリは継続
+                st.caption(f"中心著者サマリーの生成に失敗しました: {_e!s}")
+
             with st.expander("📋 著者名をすぐコピー", expanded=False):
                 _render_copy_grid(rank["著者"].tolist())
 
@@ -860,7 +1048,8 @@ def render_coauthor_tab(df: pd.DataFrame, use_disk_cache: bool = False):
                         top_nodes=top_nodes,
                         min_weight=int(min_w),
                         height_px=700,
-                        physics_enabled=(not fixed_layout)
+                        physics_enabled=(not fixed_layout),
+                        node_color_map=node_color_map
                     )
 
     # ===== ③ トレンド分析（論文数の年次推移） =====
