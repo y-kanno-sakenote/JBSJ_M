@@ -17,6 +17,24 @@ import requests
 import streamlit as st
 from pathlib import Path
 from modules.analysis import render_analysis_tab
+
+# ---- try to reuse common filter constants/helpers (no UI/logic change) ----
+try:
+    from modules.common.filters import (
+        TARGET_ORDER as _COMMON_TARGET_ORDER,
+        TYPE_ORDER as _COMMON_TYPE_ORDER,
+    )
+    _HAS_COMMON_FILTERS = True
+except Exception:
+    _COMMON_TARGET_ORDER = None
+    _COMMON_TYPE_ORDER = None
+    _HAS_COMMON_FILTERS = False
+
+# optional helper import (best-effort)
+try:
+    from modules.common.filters import sort_with_order as _common_sort_with_order  # may not exist
+except Exception:
+    _common_sort_with_order = None
 import os
 
 # 受け取り: クエリパラメータから著者を事前反映
@@ -121,11 +139,12 @@ BASE_COLS = [
     "対象物_top3","研究タイプ_top3",
     "llm_keywords","primary_keywords","secondary_keywords","featured_keywords",
 ]
-TARGET_ORDER = [
+# 統一定義（存在すれば common/filters の順序を使用）
+TARGET_ORDER = _COMMON_TARGET_ORDER or [
     "清酒","ビール","ワイン","焼酎","アルコール飲料","発酵乳・乳製品",
     "醤油","味噌","発酵食品","農産物・果実","副産物・バイオマス","酵母・微生物","アミノ酸・タンパク質","その他"
 ]
-TYPE_ORDER = [
+TYPE_ORDER = _COMMON_TYPE_ORDER or [
     "微生物・遺伝子関連","醸造工程・製造技術","応用利用・食品開発","成分分析・物性評価",
     "品質評価・官能評価","歴史・文化・経済","健康機能・栄養効果","統計解析・モデル化",
     "環境・サステナビリティ","保存・安定性","その他（研究タイプ）"
@@ -207,7 +226,16 @@ def to_int_or_none(x):
         return int(m.group()) if m else None
 
 def order_by_template(values, template):
-    """1) テンプレの順 2) 未収載はアルファ順 3) その他は最後"""
+    """
+    1) テンプレの順 2) 未収載はアルファ順 3) その他は最後
+    ※ modules.common.filters に sort_with_order があればそれを優先使用（見た目の順序は同じ）
+    """
+    # best-effort: use shared sorter if present (keeps UI order identical)
+    if _common_sort_with_order is not None:
+        try:
+            return _common_sort_with_order(list(dict.fromkeys(values)), template)
+        except Exception:
+            pass
     vs = list(dict.fromkeys(values))
     tmpl_set = set(template)
     head = [v for v in template if v in vs and "その他" not in v]

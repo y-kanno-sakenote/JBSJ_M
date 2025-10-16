@@ -196,7 +196,7 @@ def _get_japanese_font_path() -> str | None:
             return p
     return None
 
-# ==== Optional deps（無くても動く） ====
+ # ==== Optional deps（無くても動く） ====
 try:
     import plotly.express as px  # type: ignore
     HAS_PX = True
@@ -234,6 +234,89 @@ try:
     HAS_DISK_CACHE = True
 except Exception:
     HAS_DISK_CACHE = False
+
+# ---- Shared color palette (used for clusters/legend) ----
+PALETTE = [
+    "#6366F1","#22C55E","#F59E0B","#EF4444","#0EA5E9","#A855F7",
+    "#14B8A6","#F97316","#84CC16","#E11D48","#06B6D4","#10B981"
+]
+def _compute_node_communities_from_edges(edges: pd.DataFrame) -> dict[str, int]:
+    """Return {node: community_id} computed by greedy modularity (if available)."""
+    if edges is None or edges.empty or not HAS_NX or not HAS_COMMUNITY:
+        return {}
+    G = nx.Graph()
+    for _, r in edges.iterrows():
+        G.add_edge(str(r["src"]), str(r["dst"]), weight=float(r.get("weight", 1.0)))
+    try:
+        comms = list(_greedy_comms(G, weight="weight"))
+    except Exception:
+        return {}
+    mapping: dict[str, int] = {}
+    for gi, nodes in enumerate(comms):
+        for n in nodes:
+            mapping[str(n)] = gi
+    return mapping
+
+@st.cache_data(ttl=600, show_spinner=False)
+def _attach_example_titles(df_src: pd.DataFrame, edges: pd.DataFrame, max_titles: int = 3) -> pd.DataFrame:
+    """
+    Attach 'example_titles' column to edges: up to `max_titles` paper titles in which the pair co-occurred.
+    """
+    if edges is None or edges.empty:
+        return edges if edges is not None else pd.DataFrame(columns=["src","dst","weight","example_titles"])
+
+    # Build per-row unique keyword set & robust title extraction
+    rows = []
+    for _, r in df_src.iterrows():
+        # pick a best-effort title from multiple possible column names
+        title = ""
+        _title_candidates = [
+            "タイトル", "論文タイトル", "論文名", "題名",
+            "title", "Title",
+            "Japanese Title", "English Title",
+            "title_ja", "title_en",
+            "タイトル（和）", "タイトル（英）",
+            "和文タイトル", "英文タイトル",
+        ]
+        for _k in _title_candidates:
+            if _k in r and pd.notna(r[_k]) and str(r[_k]).strip():
+                title = str(r[_k])
+                break
+        kws = list(dict.fromkeys(_extract_keywords_from_row(r)))
+        if not kws:
+            continue
+        rows.append((set(kws), title))
+    out = edges.copy()
+    if not rows:
+        out["example_titles"] = ""
+        return out
+
+    # Ensure the column always exists
+    if "example_titles" not in out.columns:
+        out["example_titles"] = ""
+
+    examples: list[str] = []
+    titles_cache: dict[tuple[str,str], list[str]] = {}
+
+    def _pair_key(a: str, b: str) -> tuple[str,str]:
+        return (a, b) if a <= b else (b, a)
+
+    for idx, r in out.iterrows():
+        a = str(r["src"]); b = str(r["dst"])
+        key = _pair_key(a, b)
+        if key in titles_cache:
+            cand = titles_cache[key]
+        else:
+            cand = []
+            for kwset, title in rows:
+                if a in kwset and b in kwset:
+                    if title:
+                        cand.append(title)
+                if len(cand) >= max_titles:
+                    break
+            titles_cache[key] = cand
+        out.at[idx, "example_titles"] = " / ".join(cand[:max_titles])
+    return out
 
 
 # ========= ユーティリティ =========
@@ -377,13 +460,19 @@ def _draw_pyvis_from_edges(edges: pd.DataFrame, height_px: int = 650, color_mode
     # ---- 色分けロジック（既定: community）----
     node_group: dict[str, int] = {}
     legend_lines: list[str] = []
+    legend_html: str = ""
     if color_mode == "community" and HAS_COMMUNITY:
         try:
             comms = list(_greedy_comms(G, weight="weight"))
             for gi, nodes in enumerate(comms):
                 for n in nodes:
                     node_group[str(n)] = gi
-            legend_lines = [f"Cluster {i+1}: {len(nodes)}語" for i, nodes in enumerate(comms)]
+            # HTML で色チップ付きの凡例を用意（ネットワークと同じ PALETTE を使用）
+            chips = []
+            for i, nodes in enumerate(comms):
+                col = PALETTE[i % len(PALETTE)]
+                chips.append(f"<span style='display:inline-block;width:10px;height:10px;border-radius:2px;background:{col};margin:0 6px 0 0;vertical-align:middle;'></span> C{i+1}（{len(nodes)}語）")
+            legend_html = " ".join(chips)
         except Exception as e:
             st.info(f"クラスタ分割に失敗したため、単色表示に切り替えます（{e}）。")
             node_group = {}
@@ -397,7 +486,12 @@ def _draw_pyvis_from_edges(edges: pd.DataFrame, height_px: int = 650, color_mode
                 elif pct <= 0.75: g = 2
                 else: g = 3
                 node_group[str(n)] = g
-            legend_lines = ["中心性 下位25%", "25–50%", "50–75%", "上位25%"]
+            chips = []
+            buckets = ["#CBD5E1","#93C5FD","#60A5FA","#2563EB"]  # 視認性の良い青系（固定）
+            labels  = ["中心性 下位25%","25–50%","50–75%","上位25%"]
+            for col, lab in zip(buckets, labels):
+                chips.append(f"<span style='display:inline-block;width:10px;height:10px;border-radius:2px;background:{col};margin:0 6px 0 0;vertical-align:middle;'></span> {lab}")
+            legend_html = " ".join(chips)
         except Exception as e:
             st.info(f"中心性の計算に失敗したため、単色表示に切り替えます（{e}）。")
             node_group = {}
@@ -408,11 +502,6 @@ def _draw_pyvis_from_edges(edges: pd.DataFrame, height_px: int = 650, color_mode
     # 物理シミュレーションをやや強め、見栄えの良いレイアウト
     net.barnes_hut(gravity=-25000, central_gravity=0.15, spring_length=140, spring_strength=0.03, damping=0.18)
 
-    # パレット（モダンで落ち着いた色調）
-    palette = [
-        "#6366F1","#22C55E","#F59E0B","#EF4444","#0EA5E9","#A855F7",
-        "#14B8A6","#F97316","#84CC16","#E11D48","#06B6D4","#10B981"
-    ]
 
     # ノードの属性を設定（サイズ・グループ・タイトル・短縮ラベル）
     def _scale(value, vmin, vmax, out_min=8, out_max=36):
@@ -431,8 +520,10 @@ def _draw_pyvis_from_edges(edges: pd.DataFrame, height_px: int = 650, color_mode
         size = _scale(wsum if wsum > 0 else d, wmin if wmin > 0 else 0.0, wmax if wmax > 0 else 1.0)
         g = node_group.get(str(n))
         if g is not None:
-            G.nodes[n]["group"] = int(g)
-            # 色を固定したい場合は「color」を指定することも可能：G.nodes[n]["color"] = palette[g % len(palette)]
+            gi = int(g)
+            G.nodes[n]["group"] = gi
+            # ネットワークの色と凡例・表の色を同期させる
+            G.nodes[n]["color"] = PALETTE[gi % len(PALETTE)]
         # ラベルは長すぎる場合は省略
         label = str(n)
         label_short = label if len(label) <= 18 else (label[:16] + "…")
@@ -498,7 +589,9 @@ def _draw_pyvis_from_edges(edges: pd.DataFrame, height_px: int = 650, color_mode
     # 凡例とダウンロード
     cols = st.columns([1, 1])
     with cols[0]:
-        if legend_lines:
+        if legend_html:
+            st.markdown("**クラスタ凡例**&nbsp;&nbsp;" + legend_html, unsafe_allow_html=True)
+        elif legend_lines:
             st.caption("色分け凡例（概略）: " + " / ".join(legend_lines))
     with cols[1]:
         st.download_button(
@@ -787,7 +880,99 @@ def _render_cooccur_block(df_use: pd.DataFrame) -> None:
         st.info("LCC 表示は networkx が必要です。networkx が未導入のため全体を表示します。")
 
     st.caption(f"エッジ数: {len(edges)}")
-    st.dataframe(edges.head(200), use_container_width=True, hide_index=True)
+
+    # ---- Enrich edges with cluster id & example titles ----
+    comm_map = _compute_node_communities_from_edges(edges)
+    df_edges = edges.copy()
+    if comm_map:
+        def _edge_cluster_id(row):
+            g1 = comm_map.get(str(row["src"]))
+            g2 = comm_map.get(str(row["dst"]))
+            if g1 is None and g2 is None:
+                return None
+            if g1 == g2:
+                return g1
+            # if nodes belong to different clusters, pick the dominant (src) for display
+            return g1 if g1 is not None else g2
+        df_edges["cluster_id"] = df_edges.apply(_edge_cluster_id, axis=1)
+    else:
+        df_edges["cluster_id"] = None
+    # 表示用の色付きマーク列（数値0-3などの代わりにカラーチップ）
+    _CLUSTER_SQUARES = ["🟦","🟩","🟧","🟥","🟪","🟨","🟫","⬛","⬜"]
+    def _cluster_square(cid):
+        try:
+            i = int(cid)
+            return _CLUSTER_SQUARES[i % len(_CLUSTER_SQUARES)]
+        except Exception:
+            return ""
+    df_edges["cluster"] = df_edges["cluster_id"].map(_cluster_square)
+
+    df_edges = _attach_example_titles(df_use, df_edges, max_titles=3)
+
+    # Order columns for display（cluster は色付き四角、IDは表には出さない）
+    disp_cols = ["cluster", "src", "dst", "weight", "example_titles"]
+    show_df = df_edges[disp_cols].rename(columns={
+        "src": "語A",
+        "dst": "語B",
+        "weight": "共起回数",
+        "cluster": "cluster",
+        "example_titles": "論文例"
+    })
+    st.dataframe(
+        show_df.head(300),
+        use_container_width=True,
+        hide_index=True,
+        column_config={
+            "cluster": st.column_config.TextColumn(
+                "cluster",
+                help="自動クラスタリングに基づく色（凡例は省略）。",
+                width="small"
+            ),
+            "語A": st.column_config.TextColumn(
+                "語A",
+                width="small"
+            ),
+            "語B": st.column_config.TextColumn(
+                "語B",
+                width="small"
+            ),
+            "共起回数": st.column_config.NumberColumn(
+                "共起回数",
+                format="%d",
+                width="small"
+            ),
+            "example_titles": st.column_config.TextColumn(
+                "example_titles",
+                help="そのペアが同時に登場した論文タイトルの例（最大3件）",
+                width="large"
+            ),
+            "論文例": st.column_config.TextColumn(
+                "論文例",
+                help="そのペアが同時に登場した論文タイトルの例（最大3件）",
+                width="large"
+            ),
+        }
+    )
+
+    # テーブル用クラスタ凡例（ネットワークと同じ色で同期）
+    try:
+        present_cids = [int(c) for c in sorted(set(df_edges["cluster_id"].dropna().astype(int)))]
+    except Exception:
+        present_cids = []
+    if present_cids:
+        chips = []
+        # クラスタ内のノード数（現在のエッジに現れるノードのみ）を数える
+        nodes_present = set(df_edges["src"].astype(str)).union(set(df_edges["dst"].astype(str)))
+        # comm_map はノード→CID
+        counts = {cid: 0 for cid in present_cids}
+        for n in nodes_present:
+            cid = comm_map.get(str(n))
+            if isinstance(cid, int) and cid in counts:
+                counts[cid] += 1
+        for cid in present_cids:
+            col = PALETTE[cid % len(PALETTE)]
+            chips.append(f"<span style='display:inline-block;width:10px;height:10px;border-radius:2px;background:{col};margin:0 6px 0 0;vertical-align:middle;'></span> C{cid+1}（{counts.get(cid,0)}語）")
+        st.markdown("**クラスタ凡例**&nbsp;&nbsp;" + " ".join(chips), unsafe_allow_html=True)
 
     # クイックコピー（ノード名）
     _nodes = sorted(set(edges["src"].astype(str)).union(set(edges["dst"].astype(str)))) if not edges.empty else []
