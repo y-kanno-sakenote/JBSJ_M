@@ -17,6 +17,7 @@ from typing import List, Tuple
 
 import pandas as pd
 import streamlit as st
+import math
 
 
 # ========= 年レンジユーティリティ =========
@@ -58,6 +59,16 @@ try:
 except Exception:
     HAS_DISK_CACHE = False
 
+# ===== UI Snippets (no behavior change) =====
+_HEADER_HTML = """
+<div style="display:flex; align-items:center; gap:10px; flex-wrap:wrap; margin: 0 0 4px 0;">
+  <h2 style="margin:0; line-height:1; font-weight:600;">👨‍🔬 研究者</h2>
+  <div style="margin:0 0 2px 0; line-height:1.2; opacity:0.8; font-size:0.95rem;">
+    著者別の論文数・共著ネットワーク・トレンドを確認できます。
+  </div>
+</div>
+"""
+
 
 # ========= 並び順（temporal.py と統一） & 補助ソート関数 =========
 TARGET_ORDER = [
@@ -73,6 +84,7 @@ TYPE_ORDER = [
 ]
 
 def _sort_with_order(items: List[str], order: List[str]) -> List[str]:
+    """Return items sorted by preferred order; undefined items go last, then by name."""
     order_map = {name: i for i, name in enumerate(order)}
     # 未定義項目は末尾・元の名前順
     return sorted(items, key=lambda x: (order_map.get(x, len(order)), x))
@@ -101,16 +113,19 @@ _AUTHOR_SPLIT_RE = re.compile(r"[;；,、，/／|｜]+")
 _SPLIT_MULTI_RE  = re.compile(r"[;；,、，/／|｜\s　]+")
 
 def split_authors(cell) -> List[str]:
+    """Split an author cell by common separators; trims spaces; keeps order."""
     if cell is None:
         return []
     return [w.strip() for w in _AUTHOR_SPLIT_RE.split(str(cell)) if w.strip()]
 
 def split_multi(s) -> List[str]:
+    """Split multi-valued cell (targets/types) by common separators; trims spaces."""
     if not s:
         return []
     return [w.strip() for w in _SPLIT_MULTI_RE.split(str(s)) if w.strip()]
 
 def norm_key(s: str) -> str:
+    """Lowercased, single-spaced normalization for fuzzy includes."""
     s = str(s or "").replace("\u00A0", " ")
     s = re.sub(r"\s+", " ", s).strip()
     return s.lower()
@@ -350,7 +365,7 @@ def _yearly_author_counts(df: pd.DataFrame) -> pd.DataFrame:
     return c.sort_values(["発行年","count"], ascending=[True, False]).reset_index(drop=True)
 
 
-# ========= ネットワーク描画（PyVis） =========
+# ========= ネットワーク描画（PyVis / 表示専用） =========
 def _draw_network(edges: pd.DataFrame,
                   top_nodes: List[str] | None = None,
                   min_weight: int = 1,
@@ -389,7 +404,6 @@ def _draw_network(edges: pd.DataFrame,
             return
 
     # --- ノード強さ（接続重みの総和）と上位ラベル制御 ---
-    import math
     strength = {}
     for n in G.nodes():
         wsum = 0.0
@@ -524,20 +538,11 @@ def _render_copy_grid(authors: List[str]) -> None:
     components.html(html, height=140, scrolling=True)
 
 
-# ========= UI構築 =========
+# ========= UI構築（メイン） =========
 def render_coauthor_tab(df: pd.DataFrame, use_disk_cache: bool = False):
+    """Main entry for 研究者 tab: 論文数 / 共著ネットワーク / トレンド分析."""
     # ===== タブ見出し（下揃え＋横並び） =====
-    st.markdown(
-        """
-        <div style="display:flex; align-items:center; gap:10px; flex-wrap:wrap; margin: 0 0 4px 0;">
-          <h2 style="margin:0; line-height:1; font-weight:600;">👨‍🔬 研究者</h2>
-          <div style="margin:0 0 2px 0; line-height:1.2; opacity:0.8; font-size:0.95rem;">
-            著者別の論文数・共著ネットワーク・トレンドを確認できます。
-          </div>
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
+    st.markdown(_HEADER_HTML, unsafe_allow_html=True)
 
     if df is None or ("著者" not in df.columns):
         st.warning("著者データが見つかりません。")
@@ -965,7 +970,7 @@ def render_coauthor_tab(df: pd.DataFrame, use_disk_cache: bool = False):
         try:
             import plotly.express as px
             _sel_key = ",".join(sel) if sel else "__ALL__"
-            _uniq_key = f"res_trend_plot|{y_from}-{y_to}|{_sel_key}|ma{ma}|hi{int(hi_on)}|m{metric_mode}"
+            _uniq_key = f"res_trend_plot|{y_from}-{y_to}|{_sel_key}|ma{ma}|hi{int(hi_on)}|m{metric_mode}"  # 固有キー（再描画時の差分検知を安定化）
             plot_df = piv.reset_index().melt(id_vars="発行年", var_name="著者", value_name="値")
             # 凡例表示名を差し替え（⭐ 付与）
             plot_df["著者"] = plot_df["著者"].map(legend_map).fillna(plot_df["著者"])
@@ -976,6 +981,7 @@ def render_coauthor_tab(df: pd.DataFrame, use_disk_cache: bool = False):
         except Exception:
             # フォールバック（凡例名の差し替えは不可だがグラフは表示）
             st.line_chart(piv)
+        # 上位ランキングの“近傍”だけにサブグラフを限定して見やすくする
         # グラフの“下”にトグルと例を横並び表示（標準ウィジェットのみ・デフォルト形）
         col_tgl, col_example = st.columns([0.22, 0.78])
         with col_tgl:
