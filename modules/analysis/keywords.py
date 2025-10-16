@@ -240,6 +240,28 @@ PALETTE = [
     "#6366F1","#22C55E","#F59E0B","#EF4444","#0EA5E9","#A855F7",
     "#14B8A6","#F97316","#84CC16","#E11D48","#06B6D4","#10B981"
 ]
+
+# --- Helper: data URI for colored square (PNG or SVG fallback) ---
+def _color_square_data_uri(hex_color: str, size: int = 14) -> str:
+    """
+    Return a data URI of a small colored square (PNG). Falls back to base64 SVG if Pillow is unavailable.
+    """
+    try:
+        from PIL import Image  # type: ignore
+        import io, base64
+        img = Image.new("RGBA", (size, size), hex_color)
+        buf = io.BytesIO()
+        img.save(buf, format="PNG")
+        b64 = base64.b64encode(buf.getvalue()).decode("ascii")
+        return f"data:image/png;base64,{b64}"
+    except Exception:
+        import base64
+        svg = (
+            f"<svg xmlns='http://www.w3.org/2000/svg' width='{size}' height='{size}'>"
+            f"<rect width='100%' height='100%' rx='2' fill='{hex_color}'/></svg>"
+        )
+        b64 = base64.b64encode(svg.encode("utf-8")).decode("ascii")
+        return f"data:image/svg+xml;base64,{b64}"
 def _compute_node_communities_from_edges(edges: pd.DataFrame) -> dict[str, int]:
     """Return {node: community_id} computed by greedy modularity (if available)."""
     if edges is None or edges.empty or not HAS_NX or not HAS_COMMUNITY:
@@ -897,25 +919,25 @@ def _render_cooccur_block(df_use: pd.DataFrame) -> None:
         df_edges["cluster_id"] = df_edges.apply(_edge_cluster_id, axis=1)
     else:
         df_edges["cluster_id"] = None
-    # 表示用の色付きマーク列（数値0-3などの代わりにカラーチップ）
-    _CLUSTER_SQUARES = ["🟦","🟩","🟧","🟥","🟪","🟨","🟫","⬛","⬜"]
-    def _cluster_square(cid):
+    # 表示用: 色チップ（data URI 画像）— ネットワークと同じ PALETTE
+    def _cluster_chip(cid):
         try:
             i = int(cid)
-            return _CLUSTER_SQUARES[i % len(_CLUSTER_SQUARES)]
+            col = PALETTE[i % len(PALETTE)]
+            return _color_square_data_uri(col, size=12)
         except Exception:
             return ""
-    df_edges["cluster"] = df_edges["cluster_id"].map(_cluster_square)
+    df_edges["cluster_img"] = df_edges["cluster_id"].map(_cluster_chip)
 
     df_edges = _attach_example_titles(df_use, df_edges, max_titles=3)
 
-    # Order columns for display（cluster は色付き四角、IDは表には出さない）
-    disp_cols = ["cluster", "src", "dst", "weight", "example_titles"]
+    # Order columns for display（cluster_img は色付き画像、IDは表には出さない）
+    disp_cols = ["cluster_img", "src", "dst", "weight", "example_titles"]
     show_df = df_edges[disp_cols].rename(columns={
+        "cluster_img": "cluster",
         "src": "語A",
         "dst": "語B",
         "weight": "共起回数",
-        "cluster": "cluster",
         "example_titles": "論文例"
     })
     st.dataframe(
@@ -923,9 +945,9 @@ def _render_cooccur_block(df_use: pd.DataFrame) -> None:
         use_container_width=True,
         hide_index=True,
         column_config={
-            "cluster": st.column_config.TextColumn(
+            "cluster": st.column_config.ImageColumn(
                 "cluster",
-                help="自動クラスタリングに基づく色（凡例は省略）。",
+                help="自動クラスタリングに基づく色（ネットワークと同期）。",
                 width="small"
             ),
             "語A": st.column_config.TextColumn(
@@ -940,11 +962,6 @@ def _render_cooccur_block(df_use: pd.DataFrame) -> None:
                 "共起回数",
                 format="%d",
                 width="small"
-            ),
-            "example_titles": st.column_config.TextColumn(
-                "example_titles",
-                help="そのペアが同時に登場した論文タイトルの例（最大3件）",
-                width="large"
             ),
             "論文例": st.column_config.TextColumn(
                 "論文例",
