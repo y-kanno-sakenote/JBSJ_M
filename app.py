@@ -11,9 +11,8 @@
 - 「❌ 全て外す」ボタンでお気に入り一括解除
 """
 
-import io, re, time
+import re, time
 import pandas as pd
-import requests
 import streamlit as st
 from pathlib import Path
 from modules.analysis import render_analysis_tab
@@ -172,10 +171,6 @@ def tokens_from_query(q):
     q = norm_key(q)
     return [t for t in re.split(r"[ ,，、；;　]+", q) if t]
 
-def fetch_csv(url: str) -> pd.DataFrame:
-    r = requests.get(url, timeout=30)
-    r.raise_for_status()
-    return pd.read_csv(io.BytesIO(r.content), encoding="utf-8")
 
 def ensure_cols(df: pd.DataFrame) -> pd.DataFrame:
     df = df.copy()
@@ -276,9 +271,6 @@ AUTHORS_CSV_PATH = Path("data/authors_readings.csv")  # ← 追加: 著者読み
 def load_local_csv(path: Path) -> pd.DataFrame:
     return ensure_cols(pd.read_csv(path, encoding="utf-8"))
 
-@st.cache_data(ttl=600, show_spinner=False)
-def load_url_csv(url: str) -> pd.DataFrame:
-    return ensure_cols(fetch_csv(url))
 
 # --- 追加：summaries.csv ローダ ---
 @st.cache_data(ttl=600, show_spinner=False)
@@ -312,67 +304,24 @@ def load_authors_readings(path: Path) -> pd.DataFrame | None:
     except Exception:
         return None
 
-with st.sidebar:
-    st.header("データ読み込み")
-    st.caption("※ まずはデモ用CSVを自動ロード。URL/ファイル指定で上書きできます。")
-
-    use_demo = st.toggle("デモCSVを自動ロードする", value=True, help="data/demo.csv を読み込みます。")
-    url = st.text_input(
-        "CSVのURL（任意・Googleスプレッドシートの output=csv でもOK）",
-        value=""
-    )
-    up  = st.file_uploader("CSVをローカルから読み込み", type=["csv"])
-    load_clicked = st.button("読み込み（URL/ファイルを優先）", type="primary", key="load_btn")
-
-with st.sidebar:
-    use_disk_cache = st.toggle(
-        "🗃 永続キャッシュを使う",
-        value=True,
-        help="重い分析結果を cache/ に保存・再利用します（再起動後も有効）"
-    )
-
-    if st.button("🧹 永続キャッシュをクリア"):
-        # モジュールのIOラッパを呼ぶ（後述の cache_utils.py）
-        try:
-            from modules.common.cache_utils import clear_cache
-            n = clear_cache()
-            st.success(f"キャッシュを削除しました（{n} 個）")
-        except Exception as e:
-            st.warning(f"キャッシュ削除に失敗: {e}")
-
-# 優先順位: 1) クリックでURL/ファイル 2) デモ自動 3) 最後の手段：待機
-# ✅ 丸ごと置き換え：
+# -------------------- データ読み込み（固定：同梱CSV） --------------------
 df = None
-err = None
-try:
-    if load_clicked:
-        if up is not None:
-            df = ensure_cols(pd.read_csv(up, encoding="utf-8"))
-            st.toast("ローカルCSVを読み込みました")
-        elif url.strip():
-            df = load_url_csv(url.strip())
-            st.toast("URLのCSVを読み込みました")
-        else:
-            st.warning("URL または CSV を指定してください。")
-    elif use_demo and DEMO_CSV_PATH.exists():
-        df = load_local_csv(DEMO_CSV_PATH)
-        st.caption(f"✅ デモCSVを自動ロード中: {DEMO_CSV_PATH}")
-except Exception as e:
-    err = e
-
-if df is None:
-    if err:
-        st.error(f"読み込みエラー: {err}")
-    st.info("左のサイドバーで CSV を指定するか、デモCSVを有効にしてください。")
+if DEMO_CSV_PATH.exists():
+    df = load_local_csv(DEMO_CSV_PATH)
+    st.caption(f"✅ デモCSVを読み込みました: {DEMO_CSV_PATH}")
+else:
+    st.error(f"データファイルが見つかりません: {DEMO_CSV_PATH}")
     st.stop()
-    
 # --- summary をマージ ---
 sum_df = load_summaries(SUMMARY_CSV_PATH)
 if sum_df is not None:
     df = df.merge(sum_df, on="file_name", how="left")
 
-# ===================== タブ切り替え =====================
+ # ===================== タブ切り替え =====================
 tab_search, tab_analysis = st.tabs(["🔍 検索", "📊 分析"])
+
+# 永続キャッシュは本番では常時ON（UIは廃止）
+use_disk_cache = True
 
 with tab_search:
     # -------------------- 年・巻・号フィルタ --------------------
