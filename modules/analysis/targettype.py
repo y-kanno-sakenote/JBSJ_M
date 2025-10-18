@@ -125,6 +125,26 @@ def _apply_filters(df: pd.DataFrame,
         use = use[col_contains_any(use["研究タイプ_top3"], types)]
     return use
 
+# --- 軽量な出典・再現性バナー ---
+def _render_provenance_banner_from_df(df_use: pd.DataFrame, total_n: int) -> None:
+    """
+    分析タブ用の軽量な出典・再現性バナー。
+    - 件数：フィルタ後N / 全体
+    - 期間：フィルタ後データの発行年 min–max（該当が無ければ '—'）
+    ※ filters.py から選択内容の詳細までは取らず、フィルタ後データから推定表示に留める。
+    """
+    try:
+        n_filtered = len(df_use) if df_use is not None else 0
+        years = pd.to_numeric(
+            df_use.get("発行年", pd.Series(dtype="object")),
+            errors="coerce"
+        ).dropna().astype(int) if (df_use is not None and "発行年" in df_use.columns) else pd.Series([], dtype=int)
+        period = "—" if years.empty else f"{int(years.min())}–{int(years.max())}"
+        st.caption(f"出典：JBSJ DB（N={n_filtered} / {total_n}） ｜ 期間：{period}")
+    except Exception:
+        # 失敗しても落とさない
+        st.caption(f"出典：JBSJ DB（N={len(df_use) if df_use is not None else 0} / {total_n}）")
+
 
 # ========= ① 構成比・クロス集計 =========
 @st.cache_data(ttl=600, show_spinner=False)
@@ -532,7 +552,6 @@ def _render_trend_block(df: pd.DataFrame) -> None:
             "最新年Top5を自動選択",
             value=False,
             key="obj_trend_auto5",
-            help="ONにすると、最新年の件数が多い上位5項目を右のボックスに選択状態として入れます。"
         )
         # --- initialize session state for selection to avoid Streamlit default+state collision ---
         if "obj_trend_items" not in st.session_state:
@@ -574,7 +593,8 @@ def _render_trend_block(df: pd.DataFrame) -> None:
         ma = st.number_input(
             "移動平均（年）",
             min_value=1, max_value=7, value=1, step=1,
-            key="obj_trend_ma"
+            key="obj_trend_ma",
+            help="年ごとのノイズをならします。値を上げるほど曲線は滑らかになりますが、短期の変化は見えにくくなります。"
         )
 
     piv = yearly.pivot_table(index="発行年", columns=target_mode, values="count", aggfunc="sum").fillna(0).sort_index()
@@ -738,9 +758,19 @@ def _render_cooccurrence_block(df_use: pd.DataFrame) -> None:
     with c1:
         mode = st.selectbox("ネットワークの種類", ["対象物のみ", "研究タイプのみ", "対象物×研究タイプ"], index=0, key="obj_net_mode")
     with c2:
-        topN = st.number_input("表示するノード数（多い順）", min_value=30, max_value=300, value=120, step=10, key="obj_net_topn")
+        topN = st.number_input(
+            "表示するノード数（多い順）",
+            min_value=30, max_value=300, value=120, step=10,
+            key="obj_net_topn",
+            help="出現回数が多い語から順に最大N件まで表示します。増やすほど詳細になりますが、見づらく/重くなることがあります。"
+        )
     with c3:
-        min_edge = st.number_input("最低共起数（同時出現）", min_value=1, max_value=50, value=3, step=1, key="obj_net_minw")
+        min_edge = st.number_input(
+            "最低共起数（同時出現）",
+            min_value=1, max_value=50, value=3, step=1,
+            key="obj_net_minw",
+            help="同じ論文内で2つの語が一緒に登場した回数です。値を上げるほど“よく組み合わせて語られる”強い関係だけが残ります。"
+        )
     # 候補ノード（ネットワーク種類に応じて切替）
     node_options = _node_options_for_mode(df_use, mode)
     with c4:
@@ -749,7 +779,6 @@ def _render_cooccurrence_block(df_use: pd.DataFrame) -> None:
             options=node_options,
             default=[],
             key="obj_net_include_sel",
-            help="ここで選んだ語を少なくとも1つ含むノードだけを残します。"
         )
     with c5:
         exclude_terms = st.multiselect(
@@ -757,7 +786,6 @@ def _render_cooccurrence_block(df_use: pd.DataFrame) -> None:
             options=node_options,
             default=[],
             key="obj_net_exclude_sel",
-            help="ここで選んだ語に該当するノードは除外します。"
         )
 
     use = df_use
@@ -877,6 +905,7 @@ def render_targettype_tab(df: pd.DataFrame) -> None:
         type_order=TYPE_ORDER,
     )
     df_use = _df_from_filter_result(_flt_res, df)
+    _render_provenance_banner_from_df(df_use, total_n=len(df))
 
     tab1, tab2, tab3 = st.tabs([
         "① 構成比・クロス集計",

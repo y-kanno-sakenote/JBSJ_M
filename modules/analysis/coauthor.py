@@ -559,6 +559,24 @@ def _render_copy_grid(authors: List[str]) -> None:
 
 
 # ========= UI構築（メイン） =========
+def _render_provenance_banner_from_df(df_use: pd.DataFrame, total_n: int) -> None:
+    """
+    分析タブ用の軽量な出典・再現性バナー。
+    - 件数：フィルタ後N / 全体
+    - 期間：フィルタ後データの発行年 min–max（該当が無ければ '—'）
+    ※ filters.py から選択内容の詳細までは取らず、フィルタ後データから推定表示に留める。
+    """
+    try:
+        n_filtered = len(df_use) if df_use is not None else 0
+        years = pd.to_numeric(
+            df_use.get("発行年", pd.Series(dtype="object")),
+            errors="coerce"
+        ).dropna().astype(int) if (df_use is not None and "発行年" in df_use.columns) else pd.Series([], dtype=int)
+        period = "—" if years.empty else f"{int(years.min())}–{int(years.max())}"
+        st.caption(f"出典：JBSJ DB（N={n_filtered} / {total_n}） ｜ 期間：{period}")
+    except Exception:
+        st.caption(f"出典：JBSJ DB（N={len(df_use) if df_use is not None else 0} / {total_n}）")
+
 def render_coauthor_tab(df: pd.DataFrame, use_disk_cache: bool = False):
     """Main entry for 研究者 tab: 論文数 / 共著ネットワーク / トレンド分析."""
     # ===== タブ見出し（下揃え＋横並び） =====
@@ -570,6 +588,7 @@ def render_coauthor_tab(df: pd.DataFrame, use_disk_cache: bool = False):
 
     # 共通フィルターバー（年・対象物・研究タイプ）: アダプタで取得
     df_use, y_from, y_to, tg_sel, tp_sel = _adapt_filter_bar(df)
+    _render_provenance_banner_from_df(df_use, len(df))
 
     # サブタブ構成：①論文数 ②共著ネットワーク ③トレンド分析
     tab_count, tab_network, tab_trend = st.tabs(["① 論文数", "② 共著ネットワーク", "③ トレンド分析"])
@@ -802,25 +821,32 @@ def render_coauthor_tab(df: pd.DataFrame, use_disk_cache: bool = False):
                 key="res_net_metric",
             )
         with c5:
-            top_n = st.number_input("ランキング件数", min_value=5, max_value=100, value=30, step=5, key="res_net_topn")
+            top_n = st.number_input(
+                "ランキング件数",
+                min_value=5, max_value=100, value=30, step=5,
+                key="res_net_topn",
+            )
         with c6:
-            min_w = st.number_input("描画する最小共著回数 (w≥)", min_value=1, max_value=20, value=2, step=1, key="res_net_minw")
+            min_w = st.number_input(
+                "最小共著回数（w ≥）",
+                min_value=1, max_value=20, value=2, step=1,
+                key="res_net_minw",
+                help="この回数未満の共著エッジは非表示。値を上げるほど“よく組む”強い関係だけが残ります。"
+            )
         with c7:
             must_sel_labels = st.multiselect(
-                "必須（著者名・サジェスト/読みで検索可）",
+                "必須（著者名・読みで検索可）",
                 options=_author_labels,
                 default=[],
                 key="res_net_must_ms",
-                help="『山田太郎』『やまだ』どちらでも絞り込めます。ここで選んだ著者がどちらか一方でも含まれるエッジだけを残します。"
             )
             must_sel = [_label_to_name.get(x, x) for x in must_sel_labels]
         with c8:
             excl_sel_labels = st.multiselect(
-                "除外（著者名・サジェスト/読みで検索可）",
+                "除外（著者名・読みで検索可）",
                 options=_author_labels,
                 default=[],
                 key="res_net_excl_ms",
-                help="選んだ著者（漢字 or よみ）に関わるエッジを除外します。"
             )
             excl_sel = [_label_to_name.get(x, x) for x in excl_sel_labels]
 
@@ -863,8 +889,8 @@ def render_coauthor_tab(df: pd.DataFrame, use_disk_cache: bool = False):
                 unsafe_allow_html=True,
             )
             rank = centrality_from_edges(edges, metric=metric).head(int(top_n))
-            st.caption("※ 指標の意味：次数=つながりの数 / 媒介=橋渡し度 / 固有ベクトル=影響力（有力者との結び付き）")
-            st.caption("※ ‘必須/除外’ は著者名をタイプすると候補が出ます。選択した著者を含む（/含むものを除く）エッジでネットワークを作ります。")
+            st.caption("※ 指標の意味：次数＝つながりの数｜媒介＝橋渡し度｜固有ベクトル＝影響力（有力者との結び付き）")
+            st.caption("※ 必須：選んだ著者を含むエッジだけ表示／除外：含むエッジを除外（漢字・“よみ”で検索可）。")
 
             # --- 中心著者＋近傍サマリー（クラスタ色と連動） ---
             try:
@@ -1038,9 +1064,19 @@ def render_coauthor_tab(df: pd.DataFrame, use_disk_cache: bool = False):
             with st.expander("🕸️ ネットワークを可視化", expanded=False):
                 vc1, vc2 = st.columns([1,1])
                 with vc1:
-                    top_only_cb = st.checkbox("上位ランキングの周辺だけ表示", value=True, key="res_net_toponly_cb")
+                    top_only_cb = st.checkbox(
+                        "上位ランキングの周辺だけ表示",
+                        value=True,
+                        key="res_net_toponly_cb",
+                        help="上位に選ばれた著者本人と、その直接の共著者だけでサブグラフを作ります。"
+                    )
                 with vc2:
-                    fixed_layout = st.checkbox("レイアウトを固定", value=False, key="res_net_fixed")
+                    fixed_layout = st.checkbox(
+                        "レイアウトを固定",
+                        value=False,
+                        key="res_net_fixed",
+                        help="物理シミュレーションを止め、配置を固定します（位置がぶれません）。"
+                    )
                 if st.button("🌐 描画する", key="res_net_draw"):
                     top_nodes = rank["著者"].tolist() if top_only_cb else None
                     _draw_network(
@@ -1071,7 +1107,7 @@ def render_coauthor_tab(df: pd.DataFrame, use_disk_cache: bool = False):
             max_auth = st.number_input(
                 "初期表示数（上位）",
                 min_value=3, max_value=30, value=10, step=1,
-                key="res_trend_initn"
+                key="res_trend_initn",
             )
 
         default_sel = options[: int(max_auth)]
@@ -1088,7 +1124,8 @@ def render_coauthor_tab(df: pd.DataFrame, use_disk_cache: bool = False):
             ma = st.number_input(
                 "移動平均（年）",
                 min_value=1, max_value=7, value=1, step=1,
-                key="res_trend_ma"
+                key="res_trend_ma",
+                help="年ごとの凸凹をならします。例：3 にすると3年平均。"
             )
 
         piv = yearly.pivot_table(index="発行年", columns="著者", values="count", aggfunc="sum").fillna(0).sort_index()

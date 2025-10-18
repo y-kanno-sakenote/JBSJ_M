@@ -136,6 +136,27 @@ def _order_options(all_options: list[str], preferred: list[str]) -> list[str]:
     tail = sorted([x for x in all_options if x not in preferred])
     return head + tail
 
+# --- 出典・再現性バナー（分析タブ用） ---
+def _render_provenance_banner_from_df(df_use: pd.DataFrame, total_n: int) -> None:
+    """
+    分析タブ用の軽量な出典・再現性バナー。
+    - 件数：フィルタ後N / 全体
+    - 期間：フィルタ後データの発行年 min–max（該当が無ければ '—'）
+    """
+    try:
+        n_filtered = len(df_use) if df_use is not None else 0
+        years = pd.to_numeric(
+            df_use.get("発行年", pd.Series(dtype="object")),
+            errors="coerce"
+        ).dropna().astype(int) if (df_use is not None and "発行年" in df_use.columns) else pd.Series([], dtype=int)
+        if years.empty:
+            period = "—"
+        else:
+            period = f"{int(years.min())}–{int(years.max())}"
+        st.caption(f"出典：JBSJ DB（N={n_filtered} / {total_n}） ｜ 期間：{period}")
+    except Exception:
+        st.caption(f"出典：JBSJ DB（N={len(df_use) if df_use is not None else 0} / {total_n}）")
+
 # --- 追加: ストップワードとノイズ判定 ---
 try:
     from wordcloud import STOPWORDS as WC_STOPWORDS  # type: ignore
@@ -754,8 +775,7 @@ def _render_freq_block(df_use: pd.DataFrame) -> None:
     with c1:
         topn = st.number_input("表示件数", min_value=5, max_value=100, value=30, step=5, key="kw_freq_topn")
     with c2:
-        min_total = st.number_input("最低総出現回数", min_value=1, max_value=100, value=3, step=1, key="kw_freq_min_total",
-                                    help="全期間での合計出現回数がこの値未満の語を除外します。")
+        min_total = st.number_input("最低総出現回数", min_value=1, max_value=100, value=3, step=1, key="kw_freq_min_total")
     with c3:
         count_mode_label = st.radio(
             "カウント方式",
@@ -823,14 +843,12 @@ def _render_cooccur_block(df_use: pd.DataFrame) -> None:
         topN = st.number_input(
             "表示キーワード数",
             min_value=30, max_value=300, value=120, step=10, key="kw_co_topn",
-            help="出現回数が多いキーワードから上位N語だけを残します。増やすほど網は細かくなりますが、見づらく/重くなることがあります。"
         )
     with c3:
         include_raw = st.text_input(
             "必須キーワード（部分一致・カンマ区切り）",
             value="",
             key="kw_co_include",
-            help="ここに含めた語のいずれかを含むエッジだけ残します（OR条件）。例: 酵母, 乳酸菌",
             placeholder="例: 酵母, 乳酸菌"
         )
     with c4:
@@ -838,7 +856,6 @@ def _render_cooccur_block(df_use: pd.DataFrame) -> None:
             "除外キーワード（部分一致・カンマ区切り）",
             value="",
             key="kw_co_exclude",
-            help="ここに含めた語を含むエッジは除外します。例: 試験, 実験",
             placeholder="例: 試験, 実験"
         )
     with c5:
@@ -848,7 +865,7 @@ def _render_cooccur_block(df_use: pd.DataFrame) -> None:
             "主要ネットワークのみ",
             value=False,
             key="kw_co_lcc_only",
-            help="グラフが複数の島に分かれる場合、一番大きい島（最大連結成分）だけを表示します。ノイズを減らし全体像を見やすくします。"
+            help="複数の島に分かれる場合、**一番大きい島だけ**を表示します。"
         )
 
     # 色分けは自動クラスタを既定で使用（ユーザー選択は廃止）
@@ -1017,14 +1034,14 @@ def _render_trend_block(df_use: pd.DataFrame) -> None:
         )
     with c2:
         ma = st.number_input(
-            "移動平均（年）", min_value=1, max_value=7, value=1, step=1, key="kw_trend_ma"
+            "移動平均（年）", min_value=1, max_value=7, value=1, step=1, key="kw_trend_ma",
+            help="年ごとの凸凹をならします。例：3 にすると3年平均。"
         )
     with c3:
         include_raw = st.text_input(
             "必須キーワード（部分一致）",
             value="",
             key="kw_trend_include",
-            help="ここに含めた語のいずれかを含むキーワードのみ表示します（OR条件）。例: 酵母, 乳酸菌",
             placeholder="例: 酵母, 乳酸菌"
         )
     with c4:
@@ -1032,7 +1049,6 @@ def _render_trend_block(df_use: pd.DataFrame) -> None:
             "除外キーワード（部分一致）",
             value="",
             key="kw_trend_exclude",
-            help="ここに含めた語を含むキーワードを除外します。例: 試験, 実験",
             placeholder="例: 試験, 実験"
         )
     with c5:
@@ -1154,6 +1170,9 @@ def render_keyword_tab(df: pd.DataFrame) -> None:
         target_order=TARGET_ORDER,
         type_order=TYPE_ORDER,
     )
+
+    # 出典・再現性バナー
+    _render_provenance_banner_from_df(df_use, total_n=len(df))
 
     tab1, tab2, tab3 = st.tabs([
         "① 頻出キーワード",

@@ -477,9 +477,58 @@ with tab_search:
 
     filtered = apply_filters(df)
 
-    # -------------------- 検索結果テーブル --------------------
-    st.markdown("### 検索結果")
-    st.caption(f"{len(filtered)} / {len(df)} 件")
+    # -------------------- 出典・再現性用の一行バナー（検索タブ用） --------------------
+    def _render_provenance_banner(total_n: int,
+                                  filtered_n: int,
+                                  y_from: int, y_to: int,
+                                  authors: list[str] | None = None,
+                                  targets: list[str] | None = None,
+                                  types: list[str] | None = None,
+                                  kw_query: str | None = None,
+                                  kw_mode: str = "OR") -> None:
+        """
+        タブ上部に軽量の共通注記（出典＋適用条件）を1行で表示。
+        空の要素は自動的に省略。
+        """
+        parts = [f"出典：JBSJ DB（N={filtered_n} / {total_n}）", f"期間：{y_from}–{y_to}"]
+
+        def _fmt_list(name: str, vals: list[str] | None, max_items: int = 6) -> None:
+            if not vals:
+                return
+            vs = [str(v) for v in vals if str(v).strip()]
+            if not vs:
+                return
+            txt = ", ".join(vs[:max_items]) + (" …" if len(vs) > max_items else "")
+            parts.append(f"{name}：{txt}")
+
+        _fmt_list("対象物", targets)
+        _fmt_list("研究タイプ", types)
+        _fmt_list("著者", authors)
+
+        if kw_query and kw_query.strip():
+            q = "、".join([t for t in re.split(r"[ ,，、；;　]+", kw_query.strip()) if t])
+            if q:
+                parts.append(f"キーワード（{kw_mode}）：{q}")
+
+        line = " ｜ ".join(parts)
+
+        st.caption(
+            f"{line}",
+        )
+
+    _render_provenance_banner(
+        total_n=len(df),
+        filtered_n=len(filtered),
+        y_from=y_from, y_to=y_to,
+        authors=authors_sel or [],
+        targets=targets_sel or [],
+        types=types_sel or [],
+        kw_query=kw_query,
+        kw_mode=kw_mode
+    )
+
+#    # -------------------- 検索結果テーブル --------------------
+    st.markdown(f"### 検索結果（{len(filtered):,}件）")
 
     visible_cols = make_visible_cols(filtered)
     if "著者" in visible_cols and "summary" in filtered.columns:
@@ -496,9 +545,6 @@ with tab_search:
         st.session_state.fav_tags = {}
 
     disp["★"] = disp["_row_id"].apply(lambda rid: rid in st.session_state.favs)
-
-    # --- 論文リスト ---
-    st.subheader("論文リスト")
 
     # 列名修正（開始ページ → p.始）
     if "開始ページ" in disp.columns:
