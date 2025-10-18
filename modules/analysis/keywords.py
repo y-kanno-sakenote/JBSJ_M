@@ -1060,10 +1060,22 @@ def _render_freq_block(df_use: pd.DataFrame) -> None:
         try:
             _y_from, _y_to, _tg_sel_tmp, _tp_sel_tmp = _extract_banner_filters(df_all=df_use, key_prefix="kw")
         except Exception:
-            _y_from, _y_to = None, None
+            _y_from, _y_to, _tg_sel_tmp, _tp_sel_tmp = None, None, [], []
         _period_txt = f"{int(_y_from)}–{int(_y_to)}" if (_y_from is not None and _y_to is not None) else "—"
         _mode_txt = "DF（登場論文数）" if count_mode == "df" else "TF（総出現回数）"
-        st.caption(f"条件：表示件数：{int(topn)} ｜ 最低回数≧{int(min_total)} ｜ {_mode_txt} ｜ 期間：{_period_txt}")
+        _tg_preview = _short_preview(_tg_sel_tmp or [], maxn=3)
+        _tp_preview = _short_preview(_tp_sel_tmp or [], maxn=3)
+        _parts = [
+            f"条件：表示件数：{int(topn)}",
+            f"最低回数≧{int(min_total)}",
+            _mode_txt,
+            f"期間：{_period_txt}",
+        ]
+        if _tg_preview:
+            _parts.append(f"対象物：{_tg_preview}")
+        if _tp_preview:
+            _parts.append(f"研究タイプ：{_tp_preview}")
+        st.caption(" ｜ ".join(_parts))
         # クイックコピー（TopN キーワード）
         _render_copy_expander(freq_df["キーワード"].astype(str).tolist(), "📋 キーワードをすぐコピー")
     else:
@@ -1072,10 +1084,22 @@ def _render_freq_block(df_use: pd.DataFrame) -> None:
         try:
             _y_from, _y_to, _tg_sel_tmp, _tp_sel_tmp = _extract_banner_filters(df_all=df_use, key_prefix="kw")
         except Exception:
-            _y_from, _y_to = None, None
+            _y_from, _y_to, _tg_sel_tmp, _tp_sel_tmp = None, None, [], []
         _period_txt = f"{int(_y_from)}–{int(_y_to)}" if (_y_from is not None and _y_to is not None) else "—"
         _mode_txt = "DF（登場論文数）" if count_mode == "df" else "TF（総出現回数）"
-        st.caption(f"条件：表示件数：{int(topn)} ｜ 最低回数≧{int(min_total)} ｜ {_mode_txt} ｜ 期間：{_period_txt}")
+        _tg_preview = _short_preview(_tg_sel_tmp or [], maxn=3)
+        _tp_preview = _short_preview(_tp_sel_tmp or [], maxn=3)
+        _parts = [
+            f"条件：表示件数：{int(topn)}",
+            f"最低回数≧{int(min_total)}",
+            _mode_txt,
+            f"期間：{_period_txt}",
+        ]
+        if _tg_preview:
+            _parts.append(f"対象物：{_tg_preview}")
+        if _tp_preview:
+            _parts.append(f"研究タイプ：{_tp_preview}")
+        st.caption(" ｜ ".join(_parts))
         _render_copy_expander(freq_df["キーワード"].astype(str).tolist(), "📋 キーワードをすぐコピー")
 
     # WordCloud（任意）
@@ -1285,6 +1309,12 @@ def _render_cooccur_block(df_use: pd.DataFrame) -> None:
     if bool(lcc_only):
         _parts.append("主要ネットワークのみ")
     _parts.append(f"期間：{_period_txt}")
+    _tg_preview = _short_preview(_tg_sel_tmp or [], maxn=3)
+    _tp_preview = _short_preview(_tp_sel_tmp or [], maxn=3)
+    if _tg_preview:
+        _parts.append(f"対象物：{_tg_preview}")
+    if _tp_preview:
+        _parts.append(f"研究タイプ：{_tp_preview}")
     st.caption(" ｜ ".join(_parts))
 
     # クイックコピー（ノード名）
@@ -1310,6 +1340,12 @@ def _render_cooccur_block(df_use: pd.DataFrame) -> None:
                 if bool(lcc_only):
                     _parts.append("主要ネットワークのみ")
                 _parts.append(f"期間：{_period_txt}")
+                _tg_preview = _short_preview(_tg_sel_tmp or [], maxn=3)
+                _tp_preview = _short_preview(_tp_sel_tmp or [], maxn=3)
+                if _tg_preview:
+                    _parts.append(f"対象物：{_tg_preview}")
+                if _tp_preview:
+                    _parts.append(f"研究タイプ：{_tp_preview}")
                 st.caption(" ｜ ".join(_parts))
         else:
             st.info("networkx / pyvis が未導入のため、表のみ表示しています。")
@@ -1412,10 +1448,12 @@ def _render_trend_block(df_use: pd.DataFrame) -> None:
         try:
             _y_from, _y_to, _tg_sel_tmp, _tp_sel_tmp = _extract_banner_filters(df_all=df_use, key_prefix="kw")
         except Exception:
-            _y_from, _y_to = None, None
+            _y_from, _y_to, _tg_sel_tmp, _tp_sel_tmp = None, None, [], []
         _period_txt = f"{int(_y_from)}–{int(_y_to)}" if (_y_from is not None and _y_to is not None) else "—"
         _inc_preview = _short_preview(include_list, maxn=3)
         _exc_preview = _short_preview(exclude_list, maxn=3)
+        _tg_preview = _short_preview(_tg_sel_tmp or [], maxn=3)
+        _tp_preview = _short_preview(_tp_sel_tmp or [], maxn=3)
         _parts = [
             f"条件：表示する語数：{int(topn)}",
             f"移動平均：{int(ma)}年"
@@ -1426,6 +1464,10 @@ def _render_trend_block(df_use: pd.DataFrame) -> None:
             _parts.append(f"除外：{_exc_preview}")
         _parts.append(f"指標：{'シェア' if metric.startswith('シェア') else '件数'}")
         _parts.append(f"期間：{_period_txt}")
+        if _tg_preview:
+            _parts.append(f"対象物：{_tg_preview}")
+        if _tp_preview:
+            _parts.append(f"研究タイプ：{_tp_preview}")
         st.caption(" ｜ ".join(_parts))
         _legend_items = [c for c in piv.columns if c != "発行年"] if hasattr(piv, 'columns') else []
         _render_copy_expander(_legend_items, "📋 キーワードをすぐコピー")
@@ -1435,10 +1477,12 @@ def _render_trend_block(df_use: pd.DataFrame) -> None:
         try:
             _y_from, _y_to, _tg_sel_tmp, _tp_sel_tmp = _extract_banner_filters(df_all=df_use, key_prefix="kw")
         except Exception:
-            _y_from, _y_to = None, None
+            _y_from, _y_to, _tg_sel_tmp, _tp_sel_tmp = None, None, [], []
         _period_txt = f"{int(_y_from)}–{int(_y_to)}" if (_y_from is not None and _y_to is not None) else "—"
         _inc_preview = _short_preview(include_list, maxn=3)
         _exc_preview = _short_preview(exclude_list, maxn=3)
+        _tg_preview = _short_preview(_tg_sel_tmp or [], maxn=3)
+        _tp_preview = _short_preview(_tp_sel_tmp or [], maxn=3)
         _parts = [
             f"条件：表示する語数：{int(topn)}",
             f"移動平均：{int(ma)}年"
@@ -1449,6 +1493,10 @@ def _render_trend_block(df_use: pd.DataFrame) -> None:
             _parts.append(f"除外：{_exc_preview}")
         _parts.append(f"指標：{'シェア' if metric.startswith('シェア') else '件数'}")
         _parts.append(f"期間：{_period_txt}")
+        if _tg_preview:
+            _parts.append(f"対象物：{_tg_preview}")
+        if _tp_preview:
+            _parts.append(f"研究タイプ：{_tp_preview}")
         st.caption(" ｜ ".join(_parts))
         _legend_items = [c for c in piv.columns if c != "発行年"] if hasattr(piv, 'columns') else []
         _render_copy_expander(_legend_items, "📋 キーワードをすぐコピー")
