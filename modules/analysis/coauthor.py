@@ -233,6 +233,45 @@ def _adapt_filter_bar(df: pd.DataFrame):
     return df, y_from, y_to, [], []
 
 
+# ========= セッションステート補完ヘルパ =========
+def _augment_with_session_state(y_from: int, y_to: int, tg_sel: list[str], tp_sel: list[str], key_prefix: str = "authors"):
+    """
+    共通filtersが DataFrame だけ返す実装だと、選択中の『対象物/研究タイプ』が分からず
+    バナーに表示できないことがある。その場合、Session State から推定して補完する。
+    既に引数に値が入っていればそれを優先（空の時だけ埋める）。
+    """
+    try:
+        ss = st.session_state
+        # --- 年 ---
+        if (y_from is None) or (y_to is None):
+            yval = ss.get(f"{key_prefix}_year", None)
+            if isinstance(yval, (list, tuple)) and len(yval) == 2:
+                try:
+                    y_from = int(yval[0]); y_to = int(yval[1])
+                except Exception:
+                    pass
+
+        def _pick_list(*names):
+            for nm in names:
+                v = ss.get(nm, None)
+                if isinstance(v, (list, tuple)) and len(v) > 0:
+                    return [str(x) for x in v if str(x).strip()]
+            return []
+
+        # --- 対象物 ---
+        if not tg_sel:
+            tg_sel = _pick_list(f"{key_prefix}_targets", f"{key_prefix}_target",
+                                f"{key_prefix}_tg", f"{key_prefix}_selected_targets")
+        # --- 研究タイプ ---
+        if not tp_sel:
+            tp_sel = _pick_list(f"{key_prefix}_types", f"{key_prefix}_type",
+                                f"{key_prefix}_tp", f"{key_prefix}_selected_types")
+
+        return int(y_from), int(y_to), tg_sel, tp_sel
+    except Exception:
+        return y_from, y_to, tg_sel, tp_sel
+
+
 # ========= 共著エッジ作成（フィルタ対応） =========
 @st.cache_data(ttl=600, show_spinner=False)
 def build_coauthor_edges(df: pd.DataFrame,
@@ -588,21 +627,51 @@ _METRIC_JA = {
 
 
 # ========= UI構築（メイン） =========
-def _render_provenance_banner_from_df(df_use: pd.DataFrame, total_n: int) -> None:
+def _render_provenance_banner_from_df(
+    df_use: pd.DataFrame,
+    total_n: int,
+    y_from: int | None = None,
+    y_to: int | None = None,
+    tg_sel: list[str] | None = None,
+    tp_sel: list[str] | None = None,
+) -> None:
     """
-    分析タブ用の軽量な出典・再現性バナー。
-    - 件数：フィルタ後N / 全体
-    - 期間：フィルタ後データの発行年 min–max（該当が無ければ '—'）
-    ※ filters.py から選択内容の詳細までは取らず、フィルタ後データから推定表示に留める。
+    分析タブ用の軽量な出典・再現性バナー（検索タブと統一スタイル）。
+    出典：JBSJ DB（N=284 / 4247） ｜ 期間：1988–2023 ｜ 対象物：清酒 ｜ 研究タイプ：微生物・遺伝子関連
     """
     try:
         n_filtered = len(df_use) if df_use is not None else 0
-        years = pd.to_numeric(
-            df_use.get("発行年", pd.Series(dtype="object")),
-            errors="coerce"
-        ).dropna().astype(int) if (df_use is not None and "発行年" in df_use.columns) else pd.Series([], dtype=int)
-        period = "—" if years.empty else f"{int(years.min())}–{int(years.max())}"
-        st.caption(f"出典：JBSJ DB（N={n_filtered} / {total_n}） ｜ 期間：{period}")
+
+        # 年レンジ（引数優先／なければdfから推定）
+        if y_from is not None and y_to is not None:
+            period = f"{int(y_from)}–{int(y_to)}"
+        else:
+            years = pd.to_numeric(
+                df_use.get("発行年", pd.Series(dtype="object")),
+                errors="coerce"
+            ).dropna().astype(int) if (df_use is not None and "発行年" in df_use.columns) else pd.Series([], dtype=int)
+            period = "—" if years.empty else f"{int(years.min())}–{int(years.max())}"
+
+        # 対象物と研究タイプ
+        tg_sel = [t for t in (tg_sel or []) if str(t).strip()]
+        tp_sel = [t for t in (tp_sel or []) if str(t).strip()]
+
+        parts = [f"出典：JBSJ DB（N={n_filtered} / {total_n}）", f"期間：{period}"]
+
+        def _fmt_list(name: str, vals: list[str] | None, max_items: int = 6):
+            if not vals:
+                return None
+            txt = ", ".join(vals[:max_items]) + (" …" if len(vals) > max_items else "")
+            return f"{name}：{txt}"
+
+        tg_txt = _fmt_list("対象物", tg_sel)
+        tp_txt = _fmt_list("研究タイプ", tp_sel)
+        if tg_txt:
+            parts.append(tg_txt)
+        if tp_txt:
+            parts.append(tp_txt)
+
+        st.caption(" ｜ ".join(parts))
     except Exception:
         st.caption(f"出典：JBSJ DB（N={len(df_use) if df_use is not None else 0} / {total_n}）")
 
@@ -617,7 +686,8 @@ def render_coauthor_tab(df: pd.DataFrame, use_disk_cache: bool = False):
 
     # 共通フィルターバー（年・対象物・研究タイプ）: アダプタで取得
     df_use, y_from, y_to, tg_sel, tp_sel = _adapt_filter_bar(df)
-    _render_provenance_banner_from_df(df_use, len(df))
+    y_from, y_to, tg_sel, tp_sel = _augment_with_session_state(y_from, y_to, tg_sel, tp_sel, key_prefix="authors")
+    _render_provenance_banner_from_df(df_use, len(df), y_from, y_to, tg_sel, tp_sel)
 
     # サブタブ構成：①論文数 ②共著ネットワーク ③トレンド分析
     tab_count, tab_network, tab_trend = st.tabs(["① 論文数", "② 共著ネットワーク", "③ トレンド分析"])
@@ -741,6 +811,16 @@ def render_coauthor_tab(df: pd.DataFrame, use_disk_cache: bool = False):
                     # フォールバック：水平にできない場合でも上位10を表示
                     st.bar_chart(rank.set_index("著者")["論文数"].head(10))
 
+            # --- ① 論文数：条件サマリー ---
+            _parts = []
+            if mode != "すべて":
+                _parts.append(mode)
+            if position:
+                _parts.append("・".join(position))
+            _parts.append(period)  # 累計 / 直近◯年
+            _local = "・".join(_parts)
+            st.caption(f"条件：{_local} ｜ ランキング件数：{int(top_n)} ｜ " + _summarize_global_filters(y_from, y_to, tg_sel, tp_sel))
+
             # ④ クイックコピー：現在表示行（rank_shown）の著者だけ
             with st.expander("📋 著者名をすぐコピー", expanded=False):
                 _render_copy_grid(rank_shown["著者"].tolist())
@@ -820,15 +900,6 @@ def render_coauthor_tab(df: pd.DataFrame, use_disk_cache: bool = False):
                 except Exception as e:
                     st.caption(f"対象物別Topの集計に失敗しました: {e!s}")
 
-        # --- ① 論文数：条件サマリー ---
-        _parts = []
-        if mode != "すべて":
-            _parts.append(mode)
-        if position:
-            _parts.append("・".join(position))
-        _parts.append(period)  # 累計 / 直近◯年
-        _local = "・".join(_parts)
-        st.caption(f"条件：{_local} ｜ ランキング件数：{int(top_n)} ｜ " + _summarize_global_filters(y_from, y_to, tg_sel, tp_sel))
 
     # ===== ② 共著ネットワーク（既存ロジックをそのまま） =====
     with tab_network:
