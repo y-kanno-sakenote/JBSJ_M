@@ -755,8 +755,9 @@ def _render_trend_block(df: pd.DataFrame, y_from: int, y_to: int, tg_sel: list[s
     # 条件サマリーキャプション
     _target_label = "対象物" if target_mode == "対象物_top3" else "研究タイプ"
     _shown_n = piv.shape[1]
-    st.caption("条件：" + f"表示項目数：{_shown_n} ｜ 移動平均：{int(ma)}年 ｜ 対象：{_target_label} ｜ " + _summary_global_filters(y_from, y_to, tg_sel, tp_sel))
-
+    st.caption(
+        "条件：" + f"対象：{_target_label} ｜ 表示項目数：{_shown_n} ｜ 移動平均：{int(ma)}年 ｜ " + _summary_global_filters(y_from, y_to, tg_sel, tp_sel)
+    )
 # ========= ③ 共起ネットワーク =========
 def _build_cooccur_edges(df: pd.DataFrame,
                          mode: str,
@@ -967,12 +968,15 @@ def _render_cooccurrence_block(df_use: pd.DataFrame, y_from: int, y_to: int, tg_
 
     st.caption(f"エッジ数: {len(edges)}")
 
-    # 条件サマリーキャプション（表の直後にも表示）
-    st.caption("条件：" +
-               f"表示するノード数：{int(topN)} ｜ 最低共起数≧{int(min_edge)} ｜ ネットワーク：{mode} ｜ " +
-               (f"必須：{len(include_terms)}件 ｜ " if include_terms else "必須：0件 ｜ ") +
-               (f"除外：{len(exclude_terms)}件 ｜ " if exclude_terms else "除外：0件 ｜ ") +
-               _summary_global_filters(y_from, y_to, tg_sel, tp_sel))
+    # 条件サマリー（凡例の下に表示するため、先に構築）
+    _cond = (
+        "条件："
+        + f"ネットワーク：{mode} ｜ 表示するノード数：{int(topN)} ｜ 最低共起数≧{int(min_edge)} ｜ "
+        + (f"必須：{len(include_terms)}件 ｜ " if include_terms else "必須：0件 ｜ ")
+        + (f"除外：{len(exclude_terms)}件 ｜ " if exclude_terms else "除外：0件 ｜ ")
+        + _summary_global_filters(y_from, y_to, tg_sel, tp_sel)
+    )
+
 
     if mode == "対象物のみ":
         col_a, col_b = "対象物A", "対象物B"
@@ -1007,8 +1011,8 @@ def _render_cooccurrence_block(df_use: pd.DataFrame, y_from: int, y_to: int, tg_
         st.dataframe(disp_view, use_container_width=True, hide_index=True)
 
     if palette:
-        # comm_id は _compute_communities_from_edges で算出済み（ノード -> cluster_id）
         _render_cluster_legend_counts(palette, comm_id)
+    st.caption(_cond)
 
     # 2) ネットワーク描画
     with st.expander("🕸️ ネットワークを可視化", expanded=False):
@@ -1025,11 +1029,13 @@ def _render_cooccurrence_block(df_use: pd.DataFrame, y_from: int, y_to: int, tg_
                 for _, r in edges.iterrows():
                     node_colors[str(r["src"])] = r.get("cluster_color", "#999999")
                     node_colors[str(r["dst"])] = r.get("cluster_color", "#999999")
-                _foot = ("条件：" +
-                         f"表示するノード数：{int(topN)} ｜ 最低共起数≧{int(min_edge)} ｜ ネットワーク：{mode} ｜ " +
-                         (f"必須：{len(include_terms)}件 ｜ " if include_terms else "必須：0件 ｜ ") +
-                         (f"除外：{len(exclude_terms)}件 ｜ " if exclude_terms else "除外：0件 ｜ ") +
-                         _summary_global_filters(y_from, y_to, tg_sel, tp_sel))
+                _foot = (
+                    "条件："
+                    + f"ネットワーク：{mode} ｜ 表示するノード数：{int(topN)} ｜ 最低共起数≧{int(min_edge)} ｜ "
+                    + (f"必須：{len(include_terms)}件 ｜ " if include_terms else "必須：0件 ｜ ")
+                    + (f"除外：{len(exclude_terms)}件 ｜ " if exclude_terms else "除外：0件 ｜ ")
+                    + _summary_global_filters(y_from, y_to, tg_sel, tp_sel)
+                )                
                 _draw_pyvis_from_edges(
                     edges,
                     height_px=680,
