@@ -32,6 +32,9 @@ from pathlib import Path
 # --- Robust import for render_filter_bar with error details ---
 _HAS_COMMON_FILTERS = False
 _FILTER_IMPORT_ERR: str | None = None
+
+# --- Track last filter bar meta result ---
+_LAST_FILTER_META: dict[str, Any] = {}
 try:
     from modules.common.filters import render_filter_bar  # type: ignore
     _HAS_COMMON_FILTERS = True
@@ -77,6 +80,7 @@ def _safe_filter_bar(df: pd.DataFrame,
     """
     modules.common.filters.render_filter_bar の存在/シグネチャ差/戻り値差を吸収し、常に DataFrame を返す。
     """
+    global _LAST_FILTER_META
     if not _HAS_COMMON_FILTERS:
         return _fallback_filter_bar(df, key_prefix=key_prefix)
 
@@ -88,17 +92,29 @@ def _safe_filter_bar(df: pd.DataFrame,
             target_order=target_order,
             type_order=type_order,
         )
+        if isinstance(res, dict):
+            _LAST_FILTER_META = res
+        else:
+            _LAST_FILTER_META = {}
         return _df_from_filter_result(res, df)
     except TypeError:
         # ② 古い/違うシグネチャ（key_prefix のみ）
         try:
             res = render_filter_bar(df, key_prefix=key_prefix)
+            if isinstance(res, dict):
+                _LAST_FILTER_META = res
+            else:
+                _LAST_FILTER_META = {}
             return _df_from_filter_result(res, df)
         except TypeError:
             pass
         # ③ 最低限の位置引数のみ
         try:
             res = render_filter_bar(df)
+            if isinstance(res, dict):
+                _LAST_FILTER_META = res
+            else:
+                _LAST_FILTER_META = {}
             return _df_from_filter_result(res, df)
         except Exception as e:
             st.warning(f"共通フィルターの呼び出しに失敗しました（{e}）。元データを使用します。", icon="⚠️")
@@ -106,6 +122,144 @@ def _safe_filter_bar(df: pd.DataFrame,
     except Exception as e:
         st.warning(f"共通フィルターで例外が発生しました（{type(e).__name__}: {e}）。元データを使用します。", icon="⚠️")
         return df
+# --- Robustly fetch explicit selections from filter meta or session state ---
+def _selected_filters(prefix: str = "kw", df_all: pd.DataFrame | None = None) -> tuple[list[str], list[str]]:
+    """Fetch explicit selections for 対象物/研究タイプ.
+    Priority:
+      1) `_LAST_FILTER_META` dict keys (various canonicalizations)
+      2) `st.session_state` keys that look like selections (for this prefix)
+    Additionally, if the picked list equals "all options" (derived from df_all),
+    suppress it by returning an empty list so the banner does not print長 lists.
+    """
+    def _as_list(x) -> list[str]:
+        if x is None:
+            return []
+        if isinstance(x, (list, tuple, set)):
+            vals = [str(v).strip() for v in x if str(v).strip()]
+        elif isinstance(x, str):
+            parts = re.split(r"[,;；、，/／|｜\s\u3000]+", x)
+            vals = [p.strip() for p in parts if p.strip()]
+        else:
+            vals = []
+        # remove generic "all" tokens defensively
+        ALL_TOKENS = {"全て", "すべて", "すべて選択", "(all)", "all", "ALL"}
+        return [v for v in vals if v not in ALL_TOKENS]
+
+    def _dedup_preserve(seq: list[str]) -> list[str]:
+        seen = set(); out: list[str] = []
+        for s in seq:
+            if s not in seen:
+                seen.add(s); out.append(s)
+        return out
+
+    # Collect from meta
+    targets: list[str] = []
+    types: list[str] = []
+    try:
+        meta = globals().get("_LAST_FILTER_META", {}) or {}
+        cand_tg = [
+            "targets", "targets_sel", "targets_selected", "selected_targets",
+            "selected_targets_labels", "selected_targets_display", "targets_labels",
+            "targets_display", "targets_active",
+            f"{prefix}_targets", f"{prefix}_targets_sel", f"{prefix}_targets_selected",
+            f"{prefix}_selected_targets", f"{prefix}_selected_targets_labels",
+            f"{prefix}_selected_targets_display", f"{prefix}_targets_labels",
+            f"{prefix}_targets_display",
+            # Japanese label variants (filters using visible label as key)
+            "対象物", "対象物_sel", "対象物_selected", "対象物_labels",
+            f"{prefix}_対象物", f"{prefix}_対象物_sel", f"{prefix}_対象物_selected", f"{prefix}_対象物_labels",
+        ]
+        cand_tp = [
+            "types", "types_sel", "types_selected", "selected_types",
+            "selected_types_labels", "selected_types_display", "types_labels",
+            "types_display", "types_active",
+            f"{prefix}_types", f"{prefix}_types_sel", f"{prefix}_types_selected",
+            f"{prefix}_selected_types", f"{prefix}_selected_types_labels",
+            f"{prefix}_selected_types_display", f"{prefix}_types_labels",
+            f"{prefix}_types_display",
+            # Japanese label variants
+            "研究タイプ", "研究タイプ_sel", "研究タイプ_selected", "研究タイプ_labels",
+            f"{prefix}_研究タイプ", f"{prefix}_研究タイプ_sel", f"{prefix}_研究タイプ_selected", f"{prefix}_研究タイプ_labels",
+        ]
+        for k in cand_tg:
+            if k in meta and not targets:
+                targets = _as_list(meta.get(k))
+        for k in cand_tp:
+            if k in meta and not types:
+                types = _as_list(meta.get(k))
+    except Exception:
+        pass
+
+    # Fallback: session_state (prefix-aware)
+    if not targets or not types:
+        try:
+            ss = st.session_state
+            def _pick(token: str) -> list[str]:
+                # try exact keys first
+                exact_keys = [
+                    f"{prefix}_{token}_sel", f"{token}_sel",
+                    f"{prefix}_{token}_labels", f"{token}_labels",
+                    f"{prefix}_{token}_display", f"{token}_display",
+                    f"{prefix}_{token}", token,
+                ]
+                # Japanese synonyms for token
+                jp_map = {
+                    "targets": "対象物",
+                    "target": "対象物",
+                    "types": "研究タイプ",
+                    "type": "研究タイプ",
+                }
+                if token in jp_map:
+                    jp = jp_map[token]
+                    exact_keys += [
+                        f"{prefix}_{jp}_sel", f"{jp}_sel",
+                        f"{prefix}_{jp}_labels", f"{jp}_labels",
+                        f"{prefix}_{jp}_display", f"{jp}_display",
+                        f"{prefix}_{jp}", jp,
+                    ]
+                for k in exact_keys:
+                    if k in ss:
+                        vals = _as_list(ss.get(k))
+                        if vals:
+                            return vals
+                # prefix-scoped scan as a last resort
+                for k in ss.keys():
+                    if k.startswith(prefix + "_") and (token in k or (token in {"targets","target"} and "対象" in k) or (token in {"types","type"} and "研究" in k)):
+                        vals = _as_list(ss.get(k))
+                        if vals:
+                            return vals
+                return []
+            if not targets:
+                targets = _pick("targets") or _pick("target")
+            if not types:
+                types = _pick("types") or _pick("type")
+        except Exception:
+            pass
+
+    # Determine full option universe from df_all (if provided)
+    def _all_options_for(col_name: str) -> list[str]:
+        if df_all is None or col_name not in df_all.columns:
+            return []
+        vals = df_all[col_name].fillna("").astype(str).tolist()
+        toks: list[str] = []
+        for v in vals:
+            toks.extend([w.strip() for w in re.split(r"[,;；、，/／|｜\s\u3000]+", v) if w.strip()])
+        return _dedup_preserve(toks)
+
+    all_targets = _all_options_for("対象物_top3")
+    all_types   = _all_options_for("研究タイプ_top3")
+
+    # Normalize for equality comparison only (case/space-insensitive)
+    def _norm(s: str) -> str:
+        return re.sub(r"\s+", "", s).casefold()
+
+    # Suppress only when "exactly all" are selected (not superset/partial)
+    if targets and all_targets and set(map(_norm, targets)) == set(map(_norm, all_targets)):
+        targets = []
+    if types and all_types and set(map(_norm, types)) == set(map(_norm, all_types)):
+        types = []
+
+    return _dedup_preserve(targets), _dedup_preserve(types)
 
 def _image_compat(data):
     try:
@@ -129,33 +283,113 @@ TYPE_ORDER = [
     "環境・サステナビリティ","保存・安定性","その他（研究タイプ）"
 ]
 
-def _order_options(all_options: list[str], preferred: list[str]) -> list[str]:
-    """preferred に含まれるものはその順で先頭に、それ以外は五十音（アルファベット）順で後ろに並べる"""
-    s = set(all_options)
-    head = [x for x in preferred if x in s]
-    tail = sorted([x for x in all_options if x not in preferred])
-    return head + tail
 
-# --- 出典・再現性バナー（分析タブ用） ---
-def _render_provenance_banner_from_df(df_use: pd.DataFrame, total_n: int) -> None:
+# --- 出典・再現性バナー（分析タブ用：coauthor準拠） ---
+def _render_provenance_banner_from_df(
+    df_use: pd.DataFrame,
+    total_n: int,
+    y_from: int | None = None,
+    y_to: int | None = None,
+    tg_sel: list[str] | None = None,
+    tp_sel: list[str] | None = None,
+) -> None:
     """
-    分析タブ用の軽量な出典・再現性バナー。
+    検索条件の簡潔な要約を1行で表示。
     - 件数：フィルタ後N / 全体
-    - 期間：フィルタ後データの発行年 min–max（該当が無ければ '—'）
+    - 期間：UIで選ばれた年レンジ（無ければdfから推定）
+    - 対象物 / 研究タイプ：選択があるときだけ表示（“全部”が選ばれている場合は非表示）
     """
     try:
         n_filtered = len(df_use) if df_use is not None else 0
-        years = pd.to_numeric(
-            df_use.get("発行年", pd.Series(dtype="object")),
-            errors="coerce"
-        ).dropna().astype(int) if (df_use is not None and "発行年" in df_use.columns) else pd.Series([], dtype=int)
-        if years.empty:
-            period = "—"
+
+        # 年レンジ（引数優先。無ければdfから推定）
+        if y_from is not None and y_to is not None:
+            period = f"{int(y_from)}–{int(y_to)}"
         else:
-            period = f"{int(years.min())}–{int(years.max())}"
-        st.caption(f"出典：JBSJ DB（N={n_filtered} / {total_n}） ｜ 期間：{period}")
+            years = pd.to_numeric(
+                df_use.get("発行年", pd.Series(dtype="object")),
+                errors="coerce"
+            ).dropna().astype(int) if (df_use is not None and "発行年" in df_use.columns) else pd.Series([], dtype=int)
+            period = "—" if years.empty else f"{int(years.min())}–{int(years.max())}"
+
+        # 値の整形（空は非表示）
+        def _fmt_list(name: str, vals: list[str] | None, max_items: int = 6):
+            if not vals:
+                return None
+            vs = [str(v).strip() for v in vals if str(v).strip()]
+            if not vs:
+                return None
+            txt = ", ".join(vs[:max_items]) + (" …" if len(vs) > max_items else "")
+            return f"{name}：{txt}"
+
+        parts = [f"出典：JBSJ DB（N={n_filtered} / {total_n}）", f"期間：{period}"]
+        tg_txt = _fmt_list("対象物", tg_sel)
+        tp_txt = _fmt_list("研究タイプ", tp_sel)
+        if tg_txt:
+            parts.append(tg_txt)
+        if tp_txt:
+            parts.append(tp_txt)
+
+        st.caption(" ｜ ".join(parts))
     except Exception:
         st.caption(f"出典：JBSJ DB（N={len(df_use) if df_use is not None else 0} / {total_n}）")
+# --- extract explicit selections for banner (coauthor準拠の軽量版) ---
+def _extract_banner_filters(df_all: pd.DataFrame,
+                            key_prefix: str = "kw") -> tuple[int | None, int | None, list[str], list[str]]:
+    """
+    1) _LAST_FILTER_META に selections があればそれを採用
+    2) 無ければ st.session_state の既知キーから拾う
+    3) 年レンジは session_state のスライダー値優先、無ければ None
+    ※ 「全部選択」かどうかの判定はここでは行わない（空=非表示の方針）
+    """
+    y_from = y_to = None
+    tg_sel: list[str] = []
+    tp_sel: list[str] = []
+
+    # 年レンジ（セッション保存のスライダーを最優先）
+    try:
+        yv = st.session_state.get(f"{key_prefix}_year", None)
+        if isinstance(yv, (list, tuple)) and len(yv) == 2:
+            y_from, y_to = int(yv[0]), int(yv[1])
+    except Exception:
+        pass
+
+    # まずはフィルタバーが返したメタを優先
+    meta = globals().get("_LAST_FILTER_META", {}) or {}
+    def _as_list(x) -> list[str]:
+        if x is None:
+            return []
+        if isinstance(x, (list, tuple, set)):
+            return [str(v).strip() for v in x if str(v).strip()]
+        if isinstance(x, str):
+            return [s.strip() for s in re.split(r"[,;；、，/／|｜\s\u3000]+", x) if s.strip()]
+        return []
+
+    for k in ["targets", "targets_sel", f"{key_prefix}_targets", f"{key_prefix}_targets_sel", "対象物", f"{key_prefix}_対象物"]:
+        if k in meta and not tg_sel:
+            tg_sel = _as_list(meta.get(k))
+    for k in ["types", "types_sel", f"{key_prefix}_types", f"{key_prefix}_types_sel", "研究タイプ", f"{key_prefix}_研究タイプ"]:
+        if k in meta and not tp_sel:
+            tp_sel = _as_list(meta.get(k))
+
+    # セッションステートからの補完（メタが空のときのみ）
+    if not tg_sel or not tp_sel:
+        try:
+            ss = st.session_state
+            if not tg_sel:
+                for k in [f"{key_prefix}_tg", f"{key_prefix}_targets", f"{key_prefix}_対象物", f"{key_prefix}_selected_targets"]:
+                    v = ss.get(k)
+                    if v:
+                        tg_sel = _as_list(v); break
+            if not tp_sel:
+                for k in [f"{key_prefix}_tp", f"{key_prefix}_types", f"{key_prefix}_研究タイプ", f"{key_prefix}_selected_types"]:
+                    v = ss.get(k)
+                    if v:
+                        tp_sel = _as_list(v); break
+        except Exception:
+            pass
+
+    return y_from, y_to, tg_sel, tp_sel
 
 # --- 追加: ストップワードとノイズ判定 ---
 try:
@@ -647,7 +881,6 @@ def _draw_pyvis_from_edges(edges: pd.DataFrame, height_px: int = 650, color_mode
         )
 
 # ==== キーワード用：クイックコピー（小さな補助UI。既存UIを崩さない） ====
-# ==== キーワード用：クイックコピー（小さな補助UI。既存UIを崩さない） ====
 from typing import List as _ListForCopy
 
 def _render_copy_grid(items: _ListForCopy[str]) -> None:
@@ -694,6 +927,19 @@ def _render_copy_expander(items: list[str], title: str) -> None:
         return
     with st.expander(title, expanded=False):
         _render_copy_grid([str(x) for x in items])
+
+# --- 小プレビュー: 'A, B, C …' 形式で短縮プレビュー ---
+def _short_preview(items: list[str], maxn: int = 3) -> str:
+    """Return 'A, B, C …' limited preview for captions; empty -> ''."""
+    try:
+        vals = [str(x).strip() for x in items if str(x).strip()]
+    except Exception:
+        vals = []
+    if not vals:
+        return ""
+    head = ", ".join(vals[:maxn])
+    tail = " …" if len(vals) > maxn else ""
+    return head + tail
 
 # ==== 追加：安全表示ヘルパー（UIは変えずに落ちにくく） ====
 def safe_show_image(obj: Any) -> None:
@@ -810,10 +1056,26 @@ def _render_freq_block(df_use: pd.DataFrame) -> None:
         fig = px.bar(freq_df, x="キーワード", y="件数", text_auto=True, title=f"頻出キーワード{title_suffix}")
         fig.update_layout(margin=dict(l=10, r=10, t=40, b=10), height=420)
         st.plotly_chart(fig, use_container_width=True)
+        # --- 図下サマリー（頻出：順序・表現修正、グラフ直下に移動） ---
+        try:
+            _y_from, _y_to, _tg_sel_tmp, _tp_sel_tmp = _extract_banner_filters(df_all=df_use, key_prefix="kw")
+        except Exception:
+            _y_from, _y_to = None, None
+        _period_txt = f"{int(_y_from)}–{int(_y_to)}" if (_y_from is not None and _y_to is not None) else "—"
+        _mode_txt = "DF（登場論文数）" if count_mode == "df" else "TF（総出現回数）"
+        st.caption(f"条件：表示件数：{int(topn)} ｜ 最低回数≧{int(min_total)} ｜ {_mode_txt} ｜ 期間：{_period_txt}")
         # クイックコピー（TopN キーワード）
         _render_copy_expander(freq_df["キーワード"].astype(str).tolist(), "📋 キーワードをすぐコピー")
     else:
         st.bar_chart(freq_df.set_index("キーワード")["件数"])
+        # --- 図下サマリー（頻出：順序・表現修正、グラフ直下に移動 / フォールバック） ---
+        try:
+            _y_from, _y_to, _tg_sel_tmp, _tp_sel_tmp = _extract_banner_filters(df_all=df_use, key_prefix="kw")
+        except Exception:
+            _y_from, _y_to = None, None
+        _period_txt = f"{int(_y_from)}–{int(_y_to)}" if (_y_from is not None and _y_to is not None) else "—"
+        _mode_txt = "DF（登場論文数）" if count_mode == "df" else "TF（総出現回数）"
+        st.caption(f"条件：表示件数：{int(topn)} ｜ 最低回数≧{int(min_total)} ｜ {_mode_txt} ｜ 期間：{_period_txt}")
         _render_copy_expander(freq_df["キーワード"].astype(str).tolist(), "📋 キーワードをすぐコピー")
 
     # WordCloud（任意）
@@ -876,6 +1138,8 @@ def _render_cooccur_block(df_use: pd.DataFrame) -> None:
 
     include_list = [norm_key(x) for x in _parse_kw_list(include_raw)]
     exclude_list = [norm_key(x) for x in _parse_kw_list(exclude_raw)]
+    _inc_preview = _short_preview(include_list, maxn=3)
+    _exc_preview = _short_preview(exclude_list, maxn=3)
 
     use = df_use
     # --- キャッシュと描画ロジックはそのまま ---
@@ -987,7 +1251,6 @@ def _render_cooccur_block(df_use: pd.DataFrame) -> None:
             ),
         }
     )
-
     # テーブル用クラスタ凡例（ネットワークと同じ色で同期）
     try:
         present_cids = [int(c) for c in sorted(set(df_edges["cluster_id"].dropna().astype(int)))]
@@ -1008,6 +1271,22 @@ def _render_cooccur_block(df_use: pd.DataFrame) -> None:
             chips.append(f"<span style='display:inline-block;width:10px;height:10px;border-radius:2px;background:{col};margin:0 6px 0 0;vertical-align:middle;'></span> C{cid+1}（{counts.get(cid,0)}語）")
         st.markdown("**クラスタ凡例**&nbsp;&nbsp;" + " ".join(chips), unsafe_allow_html=True)
 
+    # --- 図下サマリー（共起：TopN/閾値/必須・除外/LCC/期間）: 表現・位置修正 ---
+    try:
+        _y_from, _y_to, _tg_sel_tmp, _tp_sel_tmp = _extract_banner_filters(df_all=df_use, key_prefix="kw")
+    except Exception:
+        _y_from, _y_to = None, None
+    _period_txt = f"{int(_y_from)}–{int(_y_to)}" if (_y_from is not None and _y_to is not None) else "—"
+    _parts = [f"表示キーワード数{int(topN)}", f"最低共起数≧{int(min_edge)}"]
+    if _inc_preview:
+        _parts.append(f"必須：{_inc_preview}")
+    if _exc_preview:
+        _parts.append(f"除外：{_exc_preview}")
+    if bool(lcc_only):
+        _parts.append("主要ネットワークのみ")
+    _parts.append(f"期間：{_period_txt}")
+    st.caption(" ｜ ".join(_parts))
+
     # クイックコピー（ノード名）
     _nodes = sorted(set(edges["src"].astype(str)).union(set(edges["dst"].astype(str)))) if not edges.empty else []
     _render_copy_expander(_nodes, "📋 ノード名をすぐコピー")
@@ -1022,6 +1301,16 @@ def _render_cooccur_block(df_use: pd.DataFrame) -> None:
         if HAS_PYVIS and HAS_NX:
             if st.button("🌐 描画する", key="kw_co_draw"):
                 _draw_pyvis_from_edges(edges, height_px=680, color_mode=_color_mode, freeze_layout=freeze_layout)
+                # ネットワーク図の直下にも同じサマリーを表示（表現・順序修正）
+                _parts = [f"表示キーワード数{int(topN)}", f"最低共起数≧{int(min_edge)}"]
+                if _inc_preview:
+                    _parts.append(f"必須：{_inc_preview}")
+                if _exc_preview:
+                    _parts.append(f"除外：{_exc_preview}")
+                if bool(lcc_only):
+                    _parts.append("主要ネットワークのみ")
+                _parts.append(f"期間：{_period_txt}")
+                st.caption(" ｜ ".join(_parts))
         else:
             st.info("networkx / pyvis が未導入のため、表のみ表示しています。")
 # ========= ③ トレンド（経年変化） =========
@@ -1119,10 +1408,48 @@ def _render_trend_block(df_use: pd.DataFrame) -> None:
             fig.update_yaxes(ticksuffix="%", rangemode="tozero")
         fig.update_layout(height=520, margin=dict(l=10, r=10, t=30, b=10))
         st.plotly_chart(fig, use_container_width=True)
+        # --- 図下サマリー（トレンド：順序・表現修正、グラフ直下に移動） ---
+        try:
+            _y_from, _y_to, _tg_sel_tmp, _tp_sel_tmp = _extract_banner_filters(df_all=df_use, key_prefix="kw")
+        except Exception:
+            _y_from, _y_to = None, None
+        _period_txt = f"{int(_y_from)}–{int(_y_to)}" if (_y_from is not None and _y_to is not None) else "—"
+        _inc_preview = _short_preview(include_list, maxn=3)
+        _exc_preview = _short_preview(exclude_list, maxn=3)
+        _parts = [
+            f"条件：表示する語数：{int(topn)}",
+            f"移動平均：{int(ma)}年"
+        ]
+        if _inc_preview:
+            _parts.append(f"必須：{_inc_preview}")
+        if _exc_preview:
+            _parts.append(f"除外：{_exc_preview}")
+        _parts.append(f"指標：{'シェア' if metric.startswith('シェア') else '件数'}")
+        _parts.append(f"期間：{_period_txt}")
+        st.caption(" ｜ ".join(_parts))
         _legend_items = [c for c in piv.columns if c != "発行年"] if hasattr(piv, 'columns') else []
         _render_copy_expander(_legend_items, "📋 キーワードをすぐコピー")
     else:
         st.line_chart(piv)
+        # --- 図下サマリー（トレンド：順序・表現修正、グラフ直下に移動） ---
+        try:
+            _y_from, _y_to, _tg_sel_tmp, _tp_sel_tmp = _extract_banner_filters(df_all=df_use, key_prefix="kw")
+        except Exception:
+            _y_from, _y_to = None, None
+        _period_txt = f"{int(_y_from)}–{int(_y_to)}" if (_y_from is not None and _y_to is not None) else "—"
+        _inc_preview = _short_preview(include_list, maxn=3)
+        _exc_preview = _short_preview(exclude_list, maxn=3)
+        _parts = [
+            f"条件：表示する語数：{int(topn)}",
+            f"移動平均：{int(ma)}年"
+        ]
+        if _inc_preview:
+            _parts.append(f"必須：{_inc_preview}")
+        if _exc_preview:
+            _parts.append(f"除外：{_exc_preview}")
+        _parts.append(f"指標：{'シェア' if metric.startswith('シェア') else '件数'}")
+        _parts.append(f"期間：{_period_txt}")
+        st.caption(" ｜ ".join(_parts))
         _legend_items = [c for c in piv.columns if c != "発行年"] if hasattr(piv, 'columns') else []
         _render_copy_expander(_legend_items, "📋 キーワードをすぐコピー")
 # ========= エクスポート：タブ本体 =========
@@ -1170,9 +1497,16 @@ def render_keyword_tab(df: pd.DataFrame) -> None:
         target_order=TARGET_ORDER,
         type_order=TYPE_ORDER,
     )
-
-    # 出典・再現性バナー
-    _render_provenance_banner_from_df(df_use, total_n=len(df))
+    # ▼ 出典バナー（明示選択のみ表示。全部/未選択は非表示）
+    _y_from, _y_to, _tg_sel, _tp_sel = _extract_banner_filters(df, key_prefix="kw")
+    _render_provenance_banner_from_df(
+        df_use,
+        total_n=len(df),
+        y_from=_y_from,
+        y_to=_y_to,
+        tg_sel=_tg_sel or None,
+        tp_sel=_tp_sel or None,
+    )
 
     tab1, tab2, tab3 = st.tabs([
         "① 頻出キーワード",

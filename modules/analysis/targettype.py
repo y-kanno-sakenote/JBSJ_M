@@ -125,25 +125,142 @@ def _apply_filters(df: pd.DataFrame,
         use = use[col_contains_any(use["研究タイプ_top3"], types)]
     return use
 
+# --- サマリー用グローバル条件を簡潔にまとめる ---
+def _summary_global_filters(y_from: int, y_to: int, tg_sel: list[str] | None, tp_sel: list[str] | None) -> str:
+    parts = [f"期間：{int(y_from)}–{int(y_to)}"]
+    def _fmt(name: str, vals: list[str] | None, max_items: int = 6) -> None:
+        if not vals:
+            return
+        vs = [str(v).strip() for v in vals if str(v).strip()]
+        if not vs:
+            return
+        txt = ", ".join(vs[:max_items]) + (" …" if len(vs) > max_items else "")
+        parts.append(f"{name}：{txt}")
+    _fmt("対象物", tg_sel)
+    _fmt("研究タイプ", tp_sel)
+    return " ｜ ".join(parts)
+
 # --- 軽量な出典・再現性バナー ---
-def _render_provenance_banner_from_df(df_use: pd.DataFrame, total_n: int) -> None:
+def _render_provenance_banner_from_df(
+    df_use: pd.DataFrame,
+    total_n: int,
+    y_from: int | None = None,
+    y_to: int | None = None,
+    tg_sel: list[str] | None = None,
+    tp_sel: list[str] | None = None,
+) -> None:
     """
-    分析タブ用の軽量な出典・再現性バナー。
-    - 件数：フィルタ後N / 全体
-    - 期間：フィルタ後データの発行年 min–max（該当が無ければ '—'）
-    ※ filters.py から選択内容の詳細までは取らず、フィルタ後データから推定表示に留める。
+    検索タブ/研究者タブと同スタイルの軽量注記:
+    出典：JBSJ DB（N=284 / 4247） ｜ 期間：1988–2023 ｜ 対象物：清酒 ｜ 研究タイプ：微生物・遺伝子関連
+    * 選択肢が空のときは、その項目自体を非表示
     """
     try:
         n_filtered = len(df_use) if df_use is not None else 0
-        years = pd.to_numeric(
-            df_use.get("発行年", pd.Series(dtype="object")),
-            errors="coerce"
-        ).dropna().astype(int) if (df_use is not None and "発行年" in df_use.columns) else pd.Series([], dtype=int)
-        period = "—" if years.empty else f"{int(years.min())}–{int(years.max())}"
-        st.caption(f"出典：JBSJ DB（N={n_filtered} / {total_n}） ｜ 期間：{period}")
+
+        # 年レンジ（引数優先／なければdfから推定）
+        if (y_from is not None) and (y_to is not None):
+            period = f"{int(y_from)}–{int(y_to)}"
+        else:
+            years = pd.to_numeric(
+                df_use.get("発行年", pd.Series(dtype="object")),
+                errors="coerce"
+            ).dropna().astype(int) if (df_use is not None and "発行年" in df_use.columns) else pd.Series([], dtype=int)
+            period = "—" if years.empty else f"{int(years.min())}–{int(years.max())}"
+
+        # 空は抑制
+        tg_sel = [t for t in (tg_sel or []) if str(t).strip()]
+        tp_sel = [t for t in (tp_sel or []) if str(t).strip()]
+
+        parts = [f"出典：JBSJ DB（N={n_filtered} / {total_n}）", f"期間：{period}"]
+
+        def _fmt_list(name: str, vals: list[str] | None, max_items: int = 6):
+            if not vals:
+                return None
+            txt = ", ".join(vals[:max_items]) + (" …" if len(vals) > max_items else "")
+            return f"{name}：{txt}"
+
+        tg_txt = _fmt_list("対象物", tg_sel)
+        tp_txt = _fmt_list("研究タイプ", tp_sel)
+        if tg_txt: parts.append(tg_txt)
+        if tp_txt: parts.append(tp_txt)
+
+        st.caption(" ｜ ".join(parts))
     except Exception:
-        # 失敗しても落とさない
         st.caption(f"出典：JBSJ DB（N={len(df_use) if df_use is not None else 0} / {total_n}）")
+
+# ==== 新規: フィルタバー適応・セッション補完 ====
+def _adapt_filter_bar_for_obj(df: pd.DataFrame):
+    """
+    共通filters.render_filter_barの戻り値の差異を吸収するアダプタ。
+    期待: dict {"year":(from,to), "targets":[...], "types":[...]} または DataFrame
+    戻り: (df_use, y_from, y_to, targets, types)
+    """
+    try:
+        res = render_filter_bar(
+            df,
+            key_prefix="obj",
+            target_order=TARGET_ORDER,
+            type_order=TYPE_ORDER,
+        )
+    except TypeError:
+        # 古い署名にフォールバック
+        res = render_filter_bar(df, key_prefix="obj")
+
+    # dict 形式（推奨）
+    if isinstance(res, dict):
+        y_from, y_to = res.get("year", _year_min_max(df))
+        tg_sel = res.get("targets", []) or res.get("target", []) or []
+        tp_sel = res.get("types", [])   or res.get("type", [])   or []
+        df_use = _apply_filters(df, int(y_from), int(y_to), list(tg_sel), list(tp_sel))
+        return df_use, int(y_from), int(y_to), list(tg_sel), list(tp_sel)
+
+    # DataFrame 形式（既にフィルタ済み）
+    if isinstance(res, pd.DataFrame):
+        df_use = res
+        if "発行年" in df_use.columns:
+            y = pd.to_numeric(df_use["発行年"], errors="coerce")
+            if y.notna().any():
+                y_from, y_to = int(y.min()), int(y.max())
+            else:
+                y_from, y_to = _year_min_max(df)
+        else:
+            y_from, y_to = _year_min_max(df)
+        return df_use, y_from, y_to, [], []
+
+    # 不明な形式は元df
+    y_from, y_to = _year_min_max(df)
+    return df, y_from, y_to, [], []
+
+
+def _augment_with_session_state(y_from: int, y_to: int, tg_sel: list[str], tp_sel: list[str], key_prefix: str = "obj"):
+    """
+    共通filtersが DataFrame だけ返す実装だと選択中の対象物/研究タイプが分からない。
+    その場合は Session State から補完（空の時だけ）。
+    """
+    try:
+        ss = st.session_state
+
+        # 年
+        if (y_from is None) or (y_to is None):
+            yval = ss.get(f"{key_prefix}_year", None)
+            if isinstance(yval, (list, tuple)) and len(yval) == 2:
+                y_from, y_to = int(yval[0]), int(yval[1])
+
+        def _pick_list(*names):
+            for nm in names:
+                v = ss.get(nm, None)
+                if isinstance(v, (list, tuple)) and len(v) > 0:
+                    return [str(x) for x in v if str(x).strip()]
+            return []
+
+        if not tg_sel:
+            tg_sel = _pick_list(f"{key_prefix}_targets", f"{key_prefix}_target", f"{key_prefix}_tg", f"{key_prefix}_selected_targets")
+        if not tp_sel:
+            tp_sel = _pick_list(f"{key_prefix}_types", f"{key_prefix}_type", f"{key_prefix}_tp", f"{key_prefix}_selected_types")
+
+        return int(y_from), int(y_to), tg_sel, tp_sel
+    except Exception:
+        return y_from, y_to, tg_sel, tp_sel
 
 
 # ========= ① 構成比・クロス集計 =========
@@ -387,7 +504,7 @@ def _render_cluster_legend_counts(palette: dict[int, str], comm_id: dict[str, in
     st.markdown("".join(html), unsafe_allow_html=True)
 
 
-def _render_distribution_block(df: pd.DataFrame) -> None:
+def _render_distribution_block(df: pd.DataFrame, y_from: int, y_to: int, tg_sel: list[str], tp_sel: list[str]) -> None:
     # Small subheading style for inline subttls
     st.markdown("<style>.subttl{font-size:0.95rem; opacity:0.75; margin:0 0 0.25rem;}</style>", unsafe_allow_html=True)
 
@@ -424,8 +541,11 @@ def _render_distribution_block(df: pd.DataFrame) -> None:
             else:
                 st.bar_chart(tp_df.set_index("研究タイプ")["件数"])
 
+    # サマリー条件キャプション
+    st.caption("条件：" + _summary_global_filters(y_from, y_to, tg_sel, tp_sel))
 
-def _render_cross_block(df: pd.DataFrame) -> None:
+
+def _render_cross_block(df: pd.DataFrame, y_from: int, y_to: int, tg_sel: list[str], tp_sel: list[str]) -> None:
     # Use the same subttl style for the cross heatmap
     st.markdown('<div style="font-weight=600; font-size:1.1rem; margin:0 0 0.25rem;">対象物 × 研究タイプ（クロスヒートマップ）</div>', unsafe_allow_html=True)
 
@@ -492,6 +612,9 @@ def _render_cross_block(df: pd.DataFrame) -> None:
                 help="ヒートマップの各セルに件数を直接表示します。表示すると読みやすくなる一方、カテゴリ数が多い場合は見づらくなることがあります。"
             )
 
+    # 条件サマリーキャプション
+    st.caption("条件：" + ("セル値表示：ON ｜ " if bool(st.session_state.get("obj_cross_show_values", False)) else "セル値表示：OFF ｜ ") + _summary_global_filters(y_from, y_to, tg_sel, tp_sel))
+
 # ========= ② 経年トレンド =========
 @st.cache_data(ttl=600, show_spinner=False)
 def _yearly_counts(df: pd.DataFrame, col: str) -> pd.DataFrame:
@@ -511,7 +634,7 @@ def _yearly_counts(df: pd.DataFrame, col: str) -> pd.DataFrame:
     c = pd.DataFrame(rows, columns=["発行年", col]).value_counts().reset_index(name="count")
     return c.sort_values(["発行年", "count"], ascending=[True, False]).reset_index(drop=True)
 
-def _render_trend_block(df: pd.DataFrame) -> None:
+def _render_trend_block(df: pd.DataFrame, y_from: int, y_to: int, tg_sel: list[str], tp_sel: list[str]) -> None:
     # 1行に「対象」「最新年Top5自動」「表示する項目」「移動平均」を配置
     c1, c2, c3, c4 = st.columns([1.5, 1.6, 6.6, 1.5])
 
@@ -629,6 +752,11 @@ def _render_trend_block(df: pd.DataFrame) -> None:
     else:
         st.line_chart(piv, key=_uniq_key)
 
+    # 条件サマリーキャプション
+    _target_label = "対象物" if target_mode == "対象物_top3" else "研究タイプ"
+    _shown_n = piv.shape[1]
+    st.caption("条件：" + f"表示項目数：{_shown_n} ｜ 移動平均：{int(ma)}年 ｜ 対象：{_target_label} ｜ " + _summary_global_filters(y_from, y_to, tg_sel, tp_sel))
+
 # ========= ③ 共起ネットワーク =========
 def _build_cooccur_edges(df: pd.DataFrame,
                          mode: str,
@@ -658,7 +786,13 @@ def _build_cooccur_edges(df: pd.DataFrame,
     edges = edges[edges["weight"] >= int(min_edge)].sort_values("weight", ascending=False).reset_index(drop=True)
     return edges
 
-def _draw_pyvis_from_edges(edges: pd.DataFrame, height_px: int = 650, fixed_layout: bool = False, node_colors: dict[str,str] | None = None) -> None:
+def _draw_pyvis_from_edges(
+    edges: pd.DataFrame,
+    height_px: int = 650,
+    fixed_layout: bool = False,
+    node_colors: dict[str,str] | None = None,
+    footer_caption: str | None = None,
+) -> None:
     if not (HAS_NX and HAS_PYVIS):
         st.info("グラフ描画には networkx / pyvis が必要です。")
         return
@@ -743,6 +877,10 @@ def _draw_pyvis_from_edges(edges: pd.DataFrame, height_px: int = 650, fixed_layo
     html = net.generate_html(notebook=False)
     st.components.v1.html(html, height=height_px, scrolling=True)
 
+    # グラフ直下の条件サマリー（任意）
+    if footer_caption:
+        st.caption(footer_caption)
+
     st.download_button(
         "📥 ネットワークHTML",
         data=html.encode("utf-8"),
@@ -752,7 +890,7 @@ def _draw_pyvis_from_edges(edges: pd.DataFrame, height_px: int = 650, fixed_layo
         help="このネットワークを単独のHTMLファイルとして保存します（ブラウザでそのまま開けます）。"
     )
     
-def _render_cooccurrence_block(df_use: pd.DataFrame) -> None:
+def _render_cooccurrence_block(df_use: pd.DataFrame, y_from: int, y_to: int, tg_sel: list[str], tp_sel: list[str]) -> None:
     # 年・対象物・研究タイプのフィルタUIは除外し、ネットワーク種別・しきい値・ノード数のみ
     c1, c2, c3, c4, c5 = st.columns([1.2, 1.2, 1.0, 1.6, 1.6])
     with c1:
@@ -829,6 +967,13 @@ def _render_cooccurrence_block(df_use: pd.DataFrame) -> None:
 
     st.caption(f"エッジ数: {len(edges)}")
 
+    # 条件サマリーキャプション（表の直後にも表示）
+    st.caption("条件：" +
+               f"表示するノード数：{int(topN)} ｜ 最低共起数≧{int(min_edge)} ｜ ネットワーク：{mode} ｜ " +
+               (f"必須：{len(include_terms)}件 ｜ " if include_terms else "必須：0件 ｜ ") +
+               (f"除外：{len(exclude_terms)}件 ｜ " if exclude_terms else "除外：0件 ｜ ") +
+               _summary_global_filters(y_from, y_to, tg_sel, tp_sel))
+
     if mode == "対象物のみ":
         col_a, col_b = "対象物A", "対象物B"
     elif mode == "研究タイプのみ":
@@ -880,7 +1025,18 @@ def _render_cooccurrence_block(df_use: pd.DataFrame) -> None:
                 for _, r in edges.iterrows():
                     node_colors[str(r["src"])] = r.get("cluster_color", "#999999")
                     node_colors[str(r["dst"])] = r.get("cluster_color", "#999999")
-                _draw_pyvis_from_edges(edges, height_px=680, fixed_layout=fix_layout, node_colors=node_colors)
+                _foot = ("条件：" +
+                         f"表示するノード数：{int(topN)} ｜ 最低共起数≧{int(min_edge)} ｜ ネットワーク：{mode} ｜ " +
+                         (f"必須：{len(include_terms)}件 ｜ " if include_terms else "必須：0件 ｜ ") +
+                         (f"除外：{len(exclude_terms)}件 ｜ " if exclude_terms else "除外：0件 ｜ ") +
+                         _summary_global_filters(y_from, y_to, tg_sel, tp_sel))
+                _draw_pyvis_from_edges(
+                    edges,
+                    height_px=680,
+                    fixed_layout=fix_layout,
+                    node_colors=node_colors,
+                    footer_caption=_foot,
+                )
         else:
             st.info("networkx / pyvis が未導入のため、表のみ表示しています。")
 
@@ -898,14 +1054,9 @@ def render_targettype_tab(df: pd.DataFrame) -> None:
     )
 
     # 共通フィルタバー
-    _flt_res = render_filter_bar(
-        df,
-        key_prefix="obj",
-        target_order=TARGET_ORDER,
-        type_order=TYPE_ORDER,
-    )
-    df_use = _df_from_filter_result(_flt_res, df)
-    _render_provenance_banner_from_df(df_use, total_n=len(df))
+    df_use, y_from, y_to, tg_sel, tp_sel = _adapt_filter_bar_for_obj(df)
+    y_from, y_to, tg_sel, tp_sel = _augment_with_session_state(y_from, y_to, tg_sel, tp_sel, key_prefix="obj")
+    _render_provenance_banner_from_df(df_use, total_n=len(df), y_from=y_from, y_to=y_to, tg_sel=tg_sel, tp_sel=tp_sel)
 
     tab1, tab2, tab3 = st.tabs([
         "① 構成比・クロス集計",
@@ -915,12 +1066,12 @@ def render_targettype_tab(df: pd.DataFrame) -> None:
 
     with tab1:
         # 上段：対象物/研究タイプの並列バー（共通フィルタ適用済みの df_use をそのまま使用）
-        _render_distribution_block(df_use)
+        _render_distribution_block(df_use, y_from, y_to, tg_sel, tp_sel)
         st.divider()
-        _render_cross_block(df_use)
+        _render_cross_block(df_use, y_from, y_to, tg_sel, tp_sel)
 
     with tab2:
-        _render_cooccurrence_block(df_use)
+        _render_cooccurrence_block(df_use, y_from, y_to, tg_sel, tp_sel)
 
     with tab3:
-        _render_trend_block(df_use)
+        _render_trend_block(df_use, y_from, y_to, tg_sel, tp_sel)
