@@ -525,6 +525,7 @@ def _draw_network(edges: pd.DataFrame,
 
 
 # ========= コピー用の軽量HTMLグリッド =========
+
 def _render_copy_grid(authors: List[str]) -> None:
     """表は崩さず、別枠で著者名のコピーUXを提供する小さなHTMLグリッド。"""
     if not authors:
@@ -556,6 +557,34 @@ def _render_copy_grid(authors: List[str]) -> None:
     html += "</div>"
     import streamlit.components.v1 as components
     components.html(html, height=140, scrolling=True)
+
+# ========= サマリー用ユーティリティ（各サブタブ下に1行の条件要約を表示） =========
+def _join_preview(items, label, maxn=3):
+    """リストの先頭 maxn を 'A, B, C …' 形式で簡潔表示。空なら '指定なし'。"""
+    try:
+        items = [str(x) for x in items if str(x).strip()]
+    except Exception:
+        items = []
+    if not items:
+        return f"{label}：指定なし"
+    head = ", ".join(items[:maxn])
+    tail = " …" if len(items) > maxn else ""
+    return f"{label}：{head}{tail}"
+
+def _summarize_global_filters(y_from: int, y_to: int, tg_sel, tp_sel) -> str:
+    """期間・対象物・研究タイプを ' ｜ ' で連結した簡潔サマリー文字列。"""
+    parts = [f"期間：{int(y_from)}–{int(y_to)}"]
+    if tg_sel:
+        parts.append(_join_preview(tg_sel, "対象物"))
+    if tp_sel:
+        parts.append(_join_preview(tp_sel, "研究タイプ"))
+    return " ｜ ".join(parts)
+
+_METRIC_JA = {
+    "degree": "次数（つながりの数）",
+    "betweenness": "媒介（橋渡し度）",
+    "eigenvector": "固有ベクトル（影響力）",
+}
 
 
 # ========= UI構築（メイン） =========
@@ -790,6 +819,16 @@ def render_coauthor_tab(df: pd.DataFrame, use_disk_cache: bool = False):
                                         st.dataframe(sub[["著者", "件数"]], use_container_width=True, hide_index=True)
                 except Exception as e:
                     st.caption(f"対象物別Topの集計に失敗しました: {e!s}")
+
+        # --- ① 論文数：条件サマリー ---
+        _parts = []
+        if mode != "すべて":
+            _parts.append(mode)
+        if position:
+            _parts.append("・".join(position))
+        _parts.append(period)  # 累計 / 直近◯年
+        _local = "・".join(_parts)
+        st.caption(f"条件：{_local} ｜ ランキング件数：{int(top_n)} ｜ " + _summarize_global_filters(y_from, y_to, tg_sel, tp_sel))
 
     # ===== ② 共著ネットワーク（既存ロジックをそのまま） =====
     with tab_network:
@@ -1054,9 +1093,25 @@ def render_coauthor_tab(df: pd.DataFrame, use_disk_cache: bool = False):
                             )
                         _legend_parts.append("</div>")
                         st.markdown("".join(_legend_parts), unsafe_allow_html=True)
+
+                        # --- ② 共著ネットワーク：条件サマリー ---
+                        st.caption(
+                            "条件："
+                            f"{_METRIC_JA.get(str(metric), str(metric))} ｜ "
+                            f"ランキング件数：{int(top_n)} ｜ 最小共著回数：{int(min_w)} ｜ "
+                            f"必須：{len(must_sel)}件／除外：{len(excl_sel)}件 ｜ "
+                            + _summarize_global_filters(y_from, y_to, tg_sel, tp_sel)
+                        )
             except Exception as _e:
                 # サマリーは補助情報なので、失敗してもアプリは継続
                 st.caption(f"中心著者サマリーの生成に失敗しました: {_e!s}")
+                st.caption(
+                    "条件："
+                    f"{_METRIC_JA.get(str(metric), str(metric))} ｜ "
+                    f"ランキング件数：{int(top_n)} ｜ 最小共著回数：{int(min_w)} ｜ "
+                    f"必須：{len(must_sel)}件／除外：{len(excl_sel)}件 ｜ "
+                    + _summarize_global_filters(y_from, y_to, tg_sel, tp_sel)
+                )
 
             with st.expander("📋 著者名をすぐコピー", expanded=False):
                 _render_copy_grid(rank["著者"].tolist())
@@ -1223,6 +1278,12 @@ def render_coauthor_tab(df: pd.DataFrame, use_disk_cache: bool = False):
             st.markdown("<div style='height:0px'></div>", unsafe_allow_html=True)
             if hi_on_new and highlight_example_text:
                 st.caption(highlight_example_text)
+
+        # --- ③ トレンド分析：条件サマリー ---
+        st.caption(
+            f"条件：表示著者={len(sel)}名 ｜ 移動平均={int(ma)}年 ｜ 指標={metric_mode} ｜ "
+            + _summarize_global_filters(y_from, y_to, tg_sel, tp_sel)
+        )
 
         # ▼ 著者名コピー（補助機能）：表示中の著者だけを並べる
         with st.expander("📋 著者名をすぐコピー", expanded=False):
