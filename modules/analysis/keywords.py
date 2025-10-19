@@ -517,6 +517,7 @@ def _color_square_data_uri(hex_color: str, size: int = 14) -> str:
         )
         b64 = base64.b64encode(svg.encode("utf-8")).decode("ascii")
         return f"data:image/svg+xml;base64,{b64}"
+@st.cache_data(ttl=600, show_spinner=False)
 def _compute_node_communities_from_edges(edges: pd.DataFrame) -> dict[str, int]:
     """Return {node: community_id} computed by greedy modularity (if available)."""
     if edges is None or edges.empty or not HAS_NX or not HAS_COMMUNITY:
@@ -533,6 +534,162 @@ def _compute_node_communities_from_edges(edges: pd.DataFrame) -> dict[str, int]:
         for n in nodes:
             mapping[str(n)] = gi
     return mapping
+
+
+# ---- Cached PyVis HTML builder (returns HTML + legend) ----
+@st.cache_data(ttl=600, show_spinner=False)
+def _build_pyvis_cached(edges: pd.DataFrame, height_px: int = 650, color_mode: str = "community", freeze_layout: bool = False) -> tuple[str, str]:
+    """
+    Return (html, legend_html) for the given edges using pyvis/networkx.
+    Caches the heavy layout/drawing so repeated draws with the same inputs are fast.
+    """
+    if not (HAS_NX and HAS_PYVIS):
+        return ("", "")
+    if edges is None or edges.empty:
+        return ("", "")
+
+    import math
+    import pandas as _pd
+    import networkx as _nx  # type: ignore
+    from pyvis.network import Network as _Network  # type: ignore
+
+    # ===== グラフ構築（重み付き無向グラフ）=====
+    G = _nx.Graph()
+    for _, r in edges.iterrows():
+        s = str(r["src"]); t = str(r["dst"]); w = float(r["weight"])
+        if G.has_edge(s, t):
+            G[s][t]["weight"] += w
+        else:
+            G.add_edge(s, t, weight=w)
+
+    if G.number_of_nodes() == 0:
+        return ("", "")
+
+    # ノード指標（可視化用スケーリング）
+    deg = dict(G.degree())
+    deg_w = {n: 0.0 for n in G.nodes()}
+    for u, v, d in G.edges(data=True):
+        w = float(d.get("weight", 1.0))
+        deg_w[u] += w
+        deg_w[v] += w
+
+    # ---- 色分けロジック（既定: community）----
+    legend_html: str = ""
+    if color_mode == "community" and HAS_COMMUNITY:
+        try:
+            from networkx.algorithms.community import greedy_modularity_communities as _greedy  # type: ignore
+            comms = list(_greedy(G, weight="weight"))
+            node_group: dict[str, int] = {}
+            for gi, nodes in enumerate(comms):
+                for n in nodes:
+                    node_group[str(n)] = gi
+            chips = []
+            for i, nodes in enumerate(comms):
+                col = PALETTE[i % len(PALETTE)]
+                chips.append(f"<span style='display:inline-block;width:10px;height:10px;border-radius:2px;background:{col};margin:0 6px 0 0;vertical-align:middle;'></span> C{i+1}（{len(nodes)}語）")
+            legend_html = " ".join(chips)
+        except Exception:
+            node_group = {}
+    elif color_mode == "degree":
+        try:
+            dc = _nx.degree_centrality(G)
+            vals = _pd.Series(dc).rank(pct=True)
+            node_group = {}
+            for n, pct in vals.items():
+                if pct <= 0.25: g = 0
+                elif pct <= 0.5: g = 1
+                elif pct <= 0.75: g = 2
+                else: g = 3
+                node_group[str(n)] = g
+            chips = []
+            buckets = ["#CBD5E1","#93C5FD","#60A5FA","#2563EB"]
+            labels  = ["中心性 下位25%","25–50%","50–75%","上位25%"]
+            for col, lab in zip(buckets, labels):
+                chips.append(f"<span style='display:inline-block;width:10px;height:10px;border-radius:2px;background:{col};margin:0 6px 0 0;vertical-align:middle;'></span> {lab}")
+            legend_html = " ".join(chips)
+        except Exception:
+            node_group = {}
+    else:
+        node_group = {}
+
+    # ===== PyVis 描画 =====
+    net = _Network(height=f"{height_px}px", width="100%", bgcolor="#ffffff", font_color="#222")
+    net.barnes_hut(gravity=-25000, central_gravity=0.15, spring_length=140, spring_strength=0.03, damping=0.18)
+
+    def _scale(value, vmin, vmax, out_min=8, out_max=36):
+        if vmax == vmin:
+            return (out_min + out_max) / 2
+        r = (value - vmin) / (vmax - vmin)
+        return out_min + r * (out_max - out_min)
+
+    w_values = list(deg_w.values())
+    wmin, wmax = (min(w_values), max(w_values)) if w_values else (0.0, 1.0)
+
+    for n in G.nodes():
+        wsum = float(deg_w.get(n, 0.0))
+        d = int(deg.get(n, 1))
+        size = _scale(wsum if wsum > 0 else d, wmin if wmin > 0 else 0.0, wmax if wmax > 0 else 1.0)
+        g = node_group.get(str(n))
+        if g is not None:
+            gi = int(g)
+            G.nodes[n]["group"] = gi
+            G.nodes[n]["color"] = PALETTE[gi % len(PALETTE)]
+        label = str(n)
+        label_short = label if len(label) <= 18 else (label[:16] + "…")
+        G.nodes[n]["label"] = label_short
+        G.nodes[n]["title"] = f"{label}&lt;br&gt;重み合計: {wsum:.0f} / 度数: {d}"
+        G.nodes[n]["value"] = size
+
+    e_w = [float(d.get("weight", 1.0)) for _, _, d in G.edges(data=True)]
+    if e_w:
+        ew_min, ew_max = (min(e_w), max(e_w))
+    else:
+        ew_min, ew_max = (1.0, 1.0)
+    def _ew_scale(w):
+        if ew_max == ew_min:
+            return 1.5
+        return 1.0 + 4.0 * (w - ew_min) / (ew_max - ew_min)
+    for u, v, d in G.edges(data=True):
+        d["width"] = _ew_scale(float(d.get("weight", 1.0)))
+
+    net.from_nx(G)
+    try:
+        net.set_options("""
+        {
+          "interaction": {
+            "hover": true,
+            "navigationButtons": false,
+            "multiselect": true,
+            "tooltipDelay": 120
+          },
+          "nodes": {
+            "shape": "dot",
+            "shadow": true,
+            "scaling": { "min": 8, "max": 36 },
+            "font": { "size": 16, "face": "Inter, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial" },
+            "borderWidth": 1
+          },
+          "edges": {
+            "smooth": {"type": "dynamic"},
+            "color": { "opacity": 0.45 }
+          },
+          "physics": {
+            "stabilization": { "enabled": true, "iterations": 220 },
+            "barnesHut": { "avoidOverlap": 0.25, "springLength": 140, "springConstant": 0.03, "damping": 0.18 },
+            "minVelocity": 0.75
+          }
+        }
+        """)
+    except Exception:
+        pass
+
+    html = net.generate_html(notebook=False)
+    if freeze_layout:
+        html = html.replace(
+            "network = new vis.Network(container, data, options);",
+            "network = new vis.Network(container, data, options);\\nnetwork.once('stabilizationIterationsDone', function () { network.setOptions({ physics: false }); });"
+        )
+    return (html, legend_html)
 
 @st.cache_data(ttl=600, show_spinner=False)
 def _attach_example_titles(df_src: pd.DataFrame, edges: pd.DataFrame, max_titles: int = 3) -> pd.DataFrame:
@@ -714,171 +871,21 @@ def _draw_pyvis_from_edges(edges: pd.DataFrame, height_px: int = 650, color_mode
     if edges.empty:
         st.warning("対象条件でエッジがありません。")
         return
-
-    # ===== グラフ構築（重み付き無向グラフ）=====
-    G = nx.Graph()
-    for _, r in edges.iterrows():
-        s = str(r["src"]); t = str(r["dst"]); w = float(r["weight"])
-        if G.has_edge(s, t):
-            G[s][t]["weight"] += w
-        else:
-            G.add_edge(s, t, weight=w)
-
-    # ノード指標（可視化用スケーリング）
-    # - deg_w: 重み付き次数（隣接エッジ重みの合計）
-    # - deg: 度数（隣接ノード数）
-    deg = dict(G.degree())
-    deg_w = {n: 0.0 for n in G.nodes()}
-    for u, v, d in G.edges(data=True):
-        w = float(d.get("weight", 1.0))
-        deg_w[u] += w
-        deg_w[v] += w
-
-    # ---- 色分けロジック（既定: community）----
-    node_group: dict[str, int] = {}
-    legend_lines: list[str] = []
-    legend_html: str = ""
-    if color_mode == "community" and HAS_COMMUNITY:
-        try:
-            comms = list(_greedy_comms(G, weight="weight"))
-            for gi, nodes in enumerate(comms):
-                for n in nodes:
-                    node_group[str(n)] = gi
-            # HTML で色チップ付きの凡例を用意（ネットワークと同じ PALETTE を使用）
-            chips = []
-            for i, nodes in enumerate(comms):
-                col = PALETTE[i % len(PALETTE)]
-                chips.append(f"<span style='display:inline-block;width:10px;height:10px;border-radius:2px;background:{col};margin:0 6px 0 0;vertical-align:middle;'></span> C{i+1}（{len(nodes)}語）")
-            legend_html = " ".join(chips)
-        except Exception as e:
-            st.info(f"クラスタ分割に失敗したため、単色表示に切り替えます（{e}）。")
-            node_group = {}
-    elif color_mode == "degree":
-        try:
-            dc = nx.degree_centrality(G)
-            vals = pd.Series(dc).rank(pct=True)
-            for n, pct in vals.items():
-                if pct <= 0.25: g = 0
-                elif pct <= 0.5: g = 1
-                elif pct <= 0.75: g = 2
-                else: g = 3
-                node_group[str(n)] = g
-            chips = []
-            buckets = ["#CBD5E1","#93C5FD","#60A5FA","#2563EB"]  # 視認性の良い青系（固定）
-            labels  = ["中心性 下位25%","25–50%","50–75%","上位25%"]
-            for col, lab in zip(buckets, labels):
-                chips.append(f"<span style='display:inline-block;width:10px;height:10px;border-radius:2px;background:{col};margin:0 6px 0 0;vertical-align:middle;'></span> {lab}")
-            legend_html = " ".join(chips)
-        except Exception as e:
-            st.info(f"中心性の計算に失敗したため、単色表示に切り替えます（{e}）。")
-            node_group = {}
-    # "none" は単色
-
-    # ===== PyVis 描画 =====
-    net = Network(height=f"{height_px}px", width="100%", bgcolor="#ffffff", font_color="#222")
-    # 物理シミュレーションをやや強め、見栄えの良いレイアウト
-    net.barnes_hut(gravity=-25000, central_gravity=0.15, spring_length=140, spring_strength=0.03, damping=0.18)
-
-
-    # ノードの属性を設定（サイズ・グループ・タイトル・短縮ラベル）
-    def _scale(value, vmin, vmax, out_min=8, out_max=36):
-        if vmax == vmin:
-            return (out_min + out_max) / 2
-        r = (value - vmin) / (vmax - vmin)
-        return out_min + r * (out_max - out_min)
-
-    # スケールの元（重み合計を優先、無ければ度数）
-    w_values = list(deg_w.values())
-    wmin, wmax = (min(w_values), max(w_values)) if w_values else (0.0, 1.0)
-
-    for n in G.nodes():
-        wsum = float(deg_w.get(n, 0.0))
-        d = int(deg.get(n, 1))
-        size = _scale(wsum if wsum > 0 else d, wmin if wmin > 0 else 0.0, wmax if wmax > 0 else 1.0)
-        g = node_group.get(str(n))
-        if g is not None:
-            gi = int(g)
-            G.nodes[n]["group"] = gi
-            # ネットワークの色と凡例・表の色を同期させる
-            G.nodes[n]["color"] = PALETTE[gi % len(PALETTE)]
-        # ラベルは長すぎる場合は省略
-        label = str(n)
-        label_short = label if len(label) <= 18 else (label[:16] + "…")
-        G.nodes[n]["label"] = label_short
-        G.nodes[n]["title"] = f"{label}<br>重み合計: {wsum:.0f} / 度数: {d}"
-        G.nodes[n]["value"] = size  # scaling.min/max と組み合わせてサイズ反映
-
-    # エッジ幅は重みでスケール
-    e_w = [float(d.get("weight", 1.0)) for _, _, d in G.edges(data=True)]
-    if e_w:
-        ew_min, ew_max = (min(e_w), max(e_w))
-    else:
-        ew_min, ew_max = (1.0, 1.0)
-    def _ew_scale(w):
-        if ew_max == ew_min:
-            return 1.5
-        return 1.0 + 4.0 * (w - ew_min) / (ew_max - ew_min)
-    for u, v, d in G.edges(data=True):
-        d["width"] = _ew_scale(float(d.get("weight", 1.0)))
-
-    net.from_nx(G)
-
-    # スタイリッシュなオプション
-    try:
-        net.set_options("""
-        {
-          "interaction": {
-            "hover": true,
-            "navigationButtons": false,
-            "multiselect": true,
-            "tooltipDelay": 120
-          },
-          "nodes": {
-            "shape": "dot",
-            "shadow": true,
-            "scaling": { "min": 8, "max": 36 },
-            "font": { "size": 16, "face": "Inter, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial" },
-            "borderWidth": 1
-          },
-          "edges": {
-            "smooth": {"type": "dynamic"},
-            "color": { "opacity": 0.45 }
-          },
-          "physics": {
-            "stabilization": { "enabled": true, "iterations": 220 },
-            "barnesHut": { "avoidOverlap": 0.25, "springLength": 140, "springConstant": 0.03, "damping": 0.18 },
-            "minVelocity": 0.75
-          }
-        }
-        """)
-    except Exception:
-        pass
-
-    html = net.generate_html(notebook=False)
-    # （任意）初期安定化後に物理を停止して「ブルブル」を防ぐ
-    if freeze_layout:
-        html = html.replace(
-            "network = new vis.Network(container, data, options);",
-            "network = new vis.Network(container, data, options);\nnetwork.once('stabilizationIterationsDone', function () { network.setOptions({ physics: false }); });"
-        )
+    html, legend_html = _build_pyvis_cached(edges, height_px=height_px, color_mode=color_mode, freeze_layout=freeze_layout)
+    if not html:
+        st.info("ネットワークを生成できませんでした。条件を見直してください。")
+        return
     st.components.v1.html(html, height=height_px, scrolling=True)
-
-    # 凡例とダウンロード
-    cols = st.columns([1, 1])
-    with cols[0]:
-        if legend_html:
-            st.markdown("**クラスタ凡例**&nbsp;&nbsp;" + legend_html, unsafe_allow_html=True)
-        elif legend_lines:
-            st.caption("色分け凡例（概略）: " + " / ".join(legend_lines))
-    with cols[1]:
-        st.download_button(
-            "📥 ネットワークHTMLを保存",
-            data=html.encode("utf-8"),
-            file_name="keyword_cooccurrence_network.html",
-            mime="text/html",
-            key="dl_kw_pyvis_html",
-            help="単独で開けるHTMLファイルとして保存します（ブラウザでそのまま閲覧可能）。"
-        )
+    if legend_html:
+        st.markdown("**クラスタ凡例**&nbsp;&nbsp;" + legend_html, unsafe_allow_html=True)
+    st.download_button(
+        "📥 ネットワークHTMLを保存",
+        data=html.encode("utf-8"),
+        file_name="keyword_cooccurrence_network.html",
+        mime="text/html",
+        key="dl_kw_pyvis_html_cached",
+        help="単独で開けるHTMLファイルとして保存します（ブラウザでそのまま閲覧可能）。"
+    )
 
 # ==== キーワード用：クイックコピー（小さな補助UI。既存UIを崩さない） ====
 from typing import List as _ListForCopy
