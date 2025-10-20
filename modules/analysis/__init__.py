@@ -7,17 +7,26 @@ import pandas as pd
 def render_analysis_tab(df: pd.DataFrame, use_disk_cache: bool = False) -> None:
     # ---- 遅延 import（起動時エラー防止）----
     from .coauthor import render_coauthor_tab
+    
     try:
-        from .keywords import render_keyword_tab
-    except Exception:
+        from .keywords_entry import render_keyword_tab
+    except Exception as e:
+        import traceback
+        _kw_err = traceback.format_exc()
         def render_keyword_tab(_df):
-            st.warning("keywords タブの読み込みに失敗しました。コードを確認してください。")
+            st.error("keywords タブの読み込みに失敗しました。")
+            with st.expander("詳細エラー（クリックで展開）", expanded=False):
+                st.code(_kw_err, language="python")
 
     try:
         from .targettype import render_targettype_tab
-    except Exception:
+    except Exception as e:
+        import traceback
+        _tt_err = traceback.format_exc()
         def render_targettype_tab(_df):
-            st.warning("targettype タブの読み込みに失敗しました。コードを確認してください。")
+            st.error("targettype タブの読み込みに失敗しました。")
+            with st.expander("詳細エラー（クリックで展開）", expanded=False):
+                st.code(_tt_err, language="python")
 
     # ---- タブ構成 ----
     tab1, tab2, tab3 = st.tabs([
