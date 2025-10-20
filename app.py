@@ -324,7 +324,8 @@ tab_search, tab_analysis = st.tabs(["🔍 検索", "📊 分析"])
 use_disk_cache = True
 
 with tab_search:
-    # -------------------- 年・巻・号フィルタ --------------------
+    # -------------------- 検索フィルタ（分析タブと順序を揃える） --------------------
+    # 1段目：発行年・対象物・研究タイプ
     st.subheader("検索フィルタ")
     year_vals = pd.to_numeric(df.get("発行年", pd.Series(dtype=str)), errors="coerce")
     if year_vals.notna().any():
@@ -332,21 +333,12 @@ with tab_search:
     else:
         ymin_all, ymax_all = 1980, 2025
 
-    c_y, c_v, c_i = st.columns([1, 1, 1])
-    with c_y:
+    row1_y, row1_tg, row1_tp = st.columns([1.0, 1.2, 1.2])
+    with row1_y:
         y_from, y_to = st.slider(
             "発行年（範囲）", min_value=ymin_all, max_value=ymax_all,
             value=(ymin_all, ymax_all)
         )
-    with c_v:
-        vol_candidates = sorted({v for v in (df.get("巻数", pd.Series(dtype=str)).map(to_int_or_none)).dropna().unique()})
-        vols_sel = st.multiselect("巻（複数選択）", vol_candidates, default=[])
-    with c_i:
-        iss_candidates = sorted({v for v in (df.get("号数", pd.Series(dtype=str)).map(to_int_or_none)).dropna().unique()})
-        issues_sel = st.multiselect("号（複数選択）", iss_candidates, default=[])
-
-    # -------------------- 検索フィルタ（1段目：対象物 / 研究タイプ） --------------------
-    row1_tg, row1_tp = st.columns([1.2, 1.2])
     with row1_tg:
         raw_targets = {t for v in df.get("対象物_top3", pd.Series(dtype=str)).fillna("") for t in split_multi(v)}
         targets_all = order_by_template(list(raw_targets), TARGET_ORDER)
@@ -356,9 +348,9 @@ with tab_search:
         types_all = order_by_template(list(raw_types), TYPE_ORDER)
         types_sel = st.multiselect("研究タイプで絞り込み", types_all, default=[])
 
-    # -------------------- 検索フィルタ（2段目：著者 + イニシャルラジオ横並び） --------------------
-    row2_author, row2_radio = st.columns([1.0, 2.0])
-    with row2_radio:
+    # 2段目：著者・著者イニシャル選択
+    col_author, col_initial = st.columns([1.5, 2])
+    with col_initial:
         initials = ["すべて","あ","か","さ","た","な","は","ま","や","ら","わ","英字"]
         if "author_initial" not in st.session_state:
             st.session_state.author_initial = "すべて"
@@ -368,9 +360,8 @@ with tab_search:
             horizontal=True,
             key="author_initial",
         )
-
     ini = st.session_state["author_initial"]
-    with row2_author:
+    with col_author:
         adf = load_authors_readings(AUTHORS_CSV_PATH)
         if adf is not None and not adf.empty:
             cand = adf.copy()
@@ -440,7 +431,7 @@ with tab_search:
     if 'targets_sel' not in locals(): targets_sel = []
     if 'types_sel'   not in locals(): types_sel   = []
 
-    # -------------------- キーワード --------------------
+    # 3段目：キーワード
     kw_row1, kw_row2 = st.columns([3, 1])
     with kw_row1:
         kw_query = st.text_input("キーワード（空白/カンマで複数可）", value="")
@@ -453,10 +444,6 @@ with tab_search:
         if "発行年" in df2.columns:
             y = pd.to_numeric(df2["発行年"], errors="coerce")
             df2 = df2[(y >= y_from) & (y <= y_to) | y.isna()]
-        if vols_sel and "巻数" in df2.columns:
-            df2 = df2[df2["巻数"].map(to_int_or_none).isin(set(vols_sel))]
-        if issues_sel and "号数" in df2.columns:
-            df2 = df2[df2["号数"].map(to_int_or_none).isin(set(issues_sel))]
         if authors_sel and "著者" in df2.columns:
             sel = {norm_key(a) for a in authors_sel}
             def hit_author(v): return any(norm_key(x) in sel for x in split_authors(v))
