@@ -6,7 +6,7 @@ import pandas as pd
 
 def render_analysis_tab(df: pd.DataFrame, use_disk_cache: bool = False) -> None:
     # ---- 遅延 import（起動時エラー防止）----
-    from .coauthor import render_coauthor_tab
+    from .coauthor_entry import render_coauthor_tab
     
     try:
         from .keywords_entry import render_keyword_tab
@@ -19,7 +19,7 @@ def render_analysis_tab(df: pd.DataFrame, use_disk_cache: bool = False) -> None:
                 st.code(_kw_err, language="python")
 
     try:
-        from .targettype import render_targettype_tab
+        from .targettype_entry import render_targettype_tab
     except Exception as e:
         import traceback
         _tt_err = traceback.format_exc()
@@ -36,7 +36,7 @@ def render_analysis_tab(df: pd.DataFrame, use_disk_cache: bool = False) -> None:
     ])
 
     with tab1:
-        render_coauthor_tab(df, use_disk_cache=use_disk_cache)
+        render_coauthor_tab(df)
 
     with tab2:
         render_keyword_tab(df)
