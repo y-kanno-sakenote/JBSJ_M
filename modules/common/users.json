@@ -1,6 +1,1 @@
-{
-  "admin": {
-    "salt": "b8f9d3a1a1c24b2f9d8a5f1c6a7b8c9d",
-    "hash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
-  }
-}
+{"admin": {"salt": "c491e4e1418bebc79da08ad932955850", "hash": "580a06d192e1aced6a32b8f428358f29e5fc27701f41f5226d91e488c5765a04"}}
