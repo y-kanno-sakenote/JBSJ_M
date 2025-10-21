@@ -44,6 +44,49 @@ prefill_author = qp.get("author", None)
 # -------------------- ページ設定 --------------------
 st.set_page_config(page_title="醸造協会誌 論文検索", layout="wide")
 
+# -------------------- simple auth (local) --------------------
+try:
+    from modules.common import auth
+except Exception:
+    auth = None
+
+def _ensure_session_auth():
+    if "logged_in" not in st.session_state:
+        st.session_state.logged_in = False
+    if "username" not in st.session_state:
+        st.session_state.username = None
+
+_ensure_session_auth()
+
+with st.sidebar:
+    st.subheader("Login")
+    if st.session_state.logged_in:
+        st.write(f"Logged in as: {st.session_state.username}")
+        if st.button("Logout"):
+            st.session_state.logged_in = False
+            st.session_state.username = None
+            st.experimental_rerun()
+    else:
+        user = st.text_input("Username", key="_login_user")
+        pwd = st.text_input("Password", type="password", key="_login_pwd")
+        if st.button("Login"):
+            ok = False
+            if auth is not None:
+                try:
+                    ok = auth.verify_user(user, pwd)
+                except Exception:
+                    ok = False
+            if ok:
+                st.session_state.logged_in = True
+                st.session_state.username = user
+                st.success("Login successful")
+                st.experimental_rerun()
+            else:
+                st.error("Login failed")
+
+if not st.session_state.logged_in:
+    st.stop()
+
 # -------------------- コントラスト（著者ドロップダウン強化版） --------------------
 st.markdown(
     """
