@@ -38,3 +38,6 @@ build/
 *.egg-info/
 
 # Fonts and other binary assets are part of repo (do not ignore unless intentionally)
+
+# Archive for backups (local archives not tracked)
+archive/
