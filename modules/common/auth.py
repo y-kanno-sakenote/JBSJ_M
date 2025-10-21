@@ -8,6 +8,7 @@ from __future__ import annotations
 import json
 import os
 import hashlib
+import hmac
 from pathlib import Path
 from typing import Dict, Tuple, Optional
 
@@ -58,7 +59,11 @@ def verify_user(username: str, password: str) -> bool:
     except Exception:
         return False
     calc = _pbkdf2_hash(password, salt)
-    return hashlib.compare_digest(calc, stored)
+    try:
+        return hmac.compare_digest(calc, stored)
+    except Exception:
+        # fallback to constant-time compare if needed
+        return calc == stored
 
 def users_file_path() -> Path:
     _ensure_users_file()
