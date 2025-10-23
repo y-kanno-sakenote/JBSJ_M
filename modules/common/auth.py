@@ -44,7 +44,8 @@ def add_user(username: str, password: str) -> bool:
     users = load_users()
     salt = os.urandom(16)
     h = _pbkdf2_hash(password, salt)
-    users[username] = {"salt": salt.hex(), "hash": h.hex()}
+    # initialize with default plan 'free' and empty favorites list
+    users[username] = {"salt": salt.hex(), "hash": h.hex(), "plan": "free", "favorites": []}
     save_users(users)
     return True
 
@@ -68,3 +69,29 @@ def verify_user(username: str, password: str) -> bool:
 def users_file_path() -> Path:
     _ensure_users_file()
     return USERS_PATH
+
+
+def get_plan(username: str) -> str:
+    """Return the plan for the user. Defaults to 'free' if missing or user not found."""
+    users = load_users()
+    rec = users.get(username)
+    if not rec:
+        return "free"
+    return rec.get("plan", "free")
+
+
+def set_plan(username: str, plan: str) -> bool:
+    """Set the plan for an existing user. Returns True on success."""
+    if plan not in ("free", "paid"):
+        return False
+    users = load_users()
+    if username not in users:
+        return False
+    users[username]["plan"] = plan
+    save_users(users)
+    return True
+
+
+def is_paid(username: str) -> bool:
+    """Helper: True when user's plan is 'paid'."""
+    return get_plan(username) == "paid"

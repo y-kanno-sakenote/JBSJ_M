@@ -58,6 +58,19 @@ def _ensure_session_auth():
 
 _ensure_session_auth()
 
+# Safe rerun: some Streamlit environments may not allow experimental_rerun()
+def _safe_rerun():
+    try:
+        # experimental_rerun may raise if Streamlit internals change or when
+        # called outside a normal session. Guard it to avoid crashing the app.
+        st.experimental_rerun()
+    except Exception:
+        # best-effort: set a flag so UI can reflect the change without raising
+        try:
+            st.session_state._needs_rerun = True
+        except Exception:
+            pass
+
 with st.sidebar:
     st.subheader("Login")
     if st.session_state.logged_in:
@@ -65,7 +78,68 @@ with st.sidebar:
         if st.button("Logout"):
             st.session_state.logged_in = False
             st.session_state.username = None
-            st.experimental_rerun()
+            _safe_rerun()
+        # --- admin panel: manage users/plans ---
+        try:
+            if st.session_state.username == "admin":
+                st.markdown("---")
+                st.subheader("管理パネル")
+                try:
+                    users = auth.load_users()
+                except Exception:
+                    users = {}
+
+                # display simple user list with current plan shown
+                user_list = sorted(users.keys())
+                # build display labels like: "alice — free"
+                display_map = {}
+                display_opts = ["(選択してください)"]
+                for u in user_list:
+                    plan = users.get(u, {}).get("plan", "free")
+                    label = f"{u} — {plan}"
+                    display_map[label] = u
+                    display_opts.append(label)
+
+                sel_label = st.selectbox("ユーザー選択", display_opts, key="_admin_sel_user")
+                if sel_label and sel_label != "(選択してください)":
+                    sel_user = display_map.get(sel_label)
+                    cur_plan = auth.get_plan(sel_user)
+                    st.write(f"現在の plan: {cur_plan}")
+                    col_a, col_b = st.columns([1,1])
+                    with col_a:
+                        if st.button("Set free", key=f"set_free_{sel_user}"):
+                            if auth.set_plan(sel_user, "free"):
+                                st.success(f"{sel_user} を free に設定しました")
+                                _safe_rerun()
+                            else:
+                                st.error("更新に失敗しました")
+                    with col_b:
+                        if st.button("Set paid", key=f"set_paid_{sel_user}"):
+                            if auth.set_plan(sel_user, "paid"):
+                                st.success(f"{sel_user} を paid に設定しました")
+                                _safe_rerun()
+                            else:
+                                st.error("更新に失敗しました")
+
+                st.markdown("**新規ユーザー追加**")
+                new_user = st.text_input("Username", key="_admin_new_user")
+                new_pwd = st.text_input("Password", type="password", key="_admin_new_pwd")
+                new_plan = st.selectbox("Plan", ["free","paid"], index=0, key="_admin_new_plan")
+                if st.button("Add user", key="_admin_add_user"):
+                    if not new_user or not new_pwd:
+                        st.error("ユーザー名とパスワードを入力してください")
+                    else:
+                        ok = auth.add_user(new_user, new_pwd)
+                        if ok:
+                            # ensure plan set
+                            auth.set_plan(new_user, new_plan)
+                            st.success(f"ユーザー {new_user} を追加しました（plan={new_plan}）")
+                            _safe_rerun()
+                        else:
+                            st.error("ユーザー追加に失敗しました")
+        except Exception:
+            # guard against auth errors in environments without auth
+            pass
     else:
         user = st.text_input("Username", key="_login_user")
         pwd = st.text_input("Password", type="password", key="_login_pwd")
@@ -80,7 +154,7 @@ with st.sidebar:
                 st.session_state.logged_in = True
                 st.session_state.username = user
                 st.success("Login successful")
-                st.experimental_rerun()
+                _safe_rerun()
             else:
                 st.error("Login failed")
 
@@ -595,6 +669,7 @@ with tab_search:
     display_order = fixed_front + rest + ["_row_id"]
 
     with st.form("main_table_form", clear_on_submit=False):
+        # (per-row immediate toggle removed — keep session-only checkboxes in the table)
         edited_main = st.data_editor(
             disp[display_order],
             key="main_editor",
