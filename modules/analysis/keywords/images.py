@@ -28,13 +28,28 @@ def safe_show_image(obj):
     except Exception:
         pass
 
+    def _st_image_compat(data):
+        """Call st.image with use_container_width when supported; fall back to simple call otherwise."""
+        try:
+            # Preferred modern API
+            st.image(data, use_container_width=True)
+        except TypeError:
+            # Older Streamlit versions may not accept use_container_width
+            try:
+                st.image(data)
+            except Exception as e:
+                raise
+
     if Image is not None and isinstance(obj, Image.Image):
         try:
             img = obj.convert("RGBA") if obj.mode not in ("RGB","RGBA") else obj
             buf = io.BytesIO(); img.save(buf, format="PNG")
-            st.image(buf.getvalue(), use_container_width=True)
+            try:
+                _st_image_compat(buf.getvalue())
+            except Exception as e:
+                st.warning(f"PIL画像の表示で例外: {e!s}")
         except Exception as e:
-            st.warning(f"PIL画像の表示で例外: {e!s}")
+            st.warning(f"PIL画像の処理で例外: {e!s}")
         return
 
     if isinstance(obj, np.ndarray):
@@ -44,9 +59,23 @@ def safe_show_image(obj):
             else: a = np.nan_to_num(a).clip(0,255).astype(np.uint8)
         elif a.dtype != np.uint8:
             a = np.nan_to_num(a).clip(0,255).astype(np.uint8)
-        st.image(a, use_container_width=True); return
+        try:
+            _st_image_compat(a)
+        except Exception as e:
+            st.warning(f"配列画像の表示で例外: {e!s}")
+        return
 
-    if isinstance(obj, (bytes, bytearray)): st.image(obj, use_container_width=True); return
-    if isinstance(obj, str): st.image(obj, use_container_width=True); return
+    if isinstance(obj, (bytes, bytearray)):
+        try:
+            _st_image_compat(obj)
+        except Exception as e:
+            st.warning(f"バイト画像の表示で例外: {e!s}")
+        return
+    if isinstance(obj, str):
+        try:
+            _st_image_compat(obj)
+        except Exception as e:
+            st.warning(f"画像URL/パスの表示で例外: {e!s}")
+        return
 
     st.warning(f"st.imageが扱えない型: {type(obj)}")
