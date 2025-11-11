@@ -643,6 +643,13 @@ with tab_search:
     disp = filtered.loc[:, visible_cols].copy()
     disp["_row_id"] = disp.apply(make_row_id, axis=1)
 
+    # 表示用に発行年のカンマ(,)を除去（例: "1,988" -> "1988"）
+    if "発行年" in disp.columns:
+        try:
+            disp["発行年"] = disp["発行年"].astype(str).str.replace(",", "").str.strip()
+        except Exception:
+            pass
+
     if "favs" not in st.session_state:
         st.session_state.favs = set()
     if "fav_tags" not in st.session_state:
@@ -706,6 +713,13 @@ with tab_search:
     fav_disp_full = df.loc[:, visible_cols_full].copy()
     fav_disp_full["_row_id"] = fav_disp_full.apply(make_row_id, axis=1)
     fav_disp = fav_disp_full[fav_disp_full["_row_id"].isin(st.session_state.favs)].copy()
+
+    # お気に入り表示用にも発行年のカンマを除去
+    if "発行年" in fav_disp_full.columns:
+        try:
+            fav_disp_full["発行年"] = fav_disp_full["発行年"].astype(str).str.replace(",", "").str.strip()
+        except Exception:
+            pass
 
     def tags_str_for(rid: str) -> str:
         s = st.session_state.fav_tags.get(rid, set())
@@ -789,6 +803,12 @@ with tab_search:
 
         show_cols = ["No.","発行年","巻数","号数","論文タイトル","著者","対象物_top3","研究タイプ","HPリンク先","PDFリンク先","tags"]
         show_cols = [c for c in show_cols if c in fav_disp_for_filter.columns]
+        # ensure displayed year has no comma
+        if "発行年" in fav_disp_for_filter.columns:
+            try:
+                fav_disp_for_filter["発行年"] = fav_disp_for_filter["発行年"].astype(str).str.replace(",", "").str.strip()
+            except Exception:
+                pass
         st.dataframe(fav_disp_for_filter[show_cols], use_container_width=True, hide_index=True)
 
     # -------------------- 下部アクション（CSV出力：2種類） --------------------
@@ -798,6 +818,11 @@ with tab_search:
     )
 
     filtered_export_df = disp.drop(columns=["★", "_row_id"], errors="ignore")
+    if "発行年" in filtered_export_df.columns:
+        try:
+            filtered_export_df["発行年"] = filtered_export_df["発行年"].astype(str).str.replace(",", "").str.strip()
+        except Exception:
+            pass
 
     fav_export = fav_disp_full[fav_disp_full["_row_id"].isin(st.session_state.favs)].copy()
     def _tags_join(rid: str) -> str:
@@ -805,6 +830,11 @@ with tab_search:
         return ", ".join(sorted(s)) if s else ""
     fav_export["tags"] = fav_export["_row_id"].map(_tags_join)
     fav_export = fav_export.drop(columns=["_row_id"], errors="ignore")
+    if "発行年" in fav_export.columns:
+        try:
+            fav_export["発行年"] = fav_export["発行年"].astype(str).str.replace(",", "").str.strip()
+        except Exception:
+            pass
 
     c_dl1, c_dl2 = st.columns(2)
     with c_dl1:
