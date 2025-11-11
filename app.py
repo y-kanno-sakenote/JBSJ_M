@@ -551,7 +551,12 @@ with tab_search:
     # 3段目：キーワード
     kw_row1, kw_row2 = st.columns([3, 1])
     with kw_row1:
-        kw_query = st.text_input("キーワード（空白/カンマで複数可）", value="")
+        # keep kw_query in session to allow other UI elements to update it safely
+        if "kw_query_input" not in st.session_state:
+            st.session_state["kw_query_input"] = ""
+        # bind the text_input to a stable session-state key (avoids modifying session_state after widget init)
+        st.text_input("キーワード（空白/カンマで複数可）", value=st.session_state.get("kw_query_input", ""), key="kw_query_input")
+        kw_query = st.session_state.get("kw_query_input", "")
     with kw_row2:
         kw_mode = st.radio("一致条件", ["OR", "AND"], index=0, horizontal=True, key="kw_mode")
 
