@@ -33,6 +33,42 @@ except Exception:
     HAS_KAKASI = False
     _KKS = None  # type: ignore
 
+# Fallback: optionally load precomputed readings from data/authors_readings.csv
+_AUTHOR_READINGS: dict | None = None
+
+def _ensure_author_readings() -> None:
+    """Lazy-load a CSV file with author reading mappings (name -> reading).
+
+    Tries a couple of likely locations (project ./data/ and package-relative). No exception
+    is raised; failures silently leave the mapping empty.
+    """
+    global _AUTHOR_READINGS
+    if _AUTHOR_READINGS is not None:
+        return
+    _AUTHOR_READINGS = {}
+    try:
+        from pathlib import Path
+        import pandas as _pd
+        cand = [Path.cwd() / "data" / "authors_readings.csv", Path(__file__).resolve().parents[3] / "data" / "authors_readings.csv"]
+        for p in cand:
+            if p.exists():
+                try:
+                    df = _pd.read_csv(p, encoding="utf-8")
+                    cols = [c for c in df.columns]
+                    if len(cols) >= 2:
+                        key_col, val_col = cols[0], cols[1]
+                        for _, r in df.iterrows():
+                            name = str(r.get(key_col, "")).strip()
+                            yomi = str(r.get(val_col, "")).strip()
+                            if name:
+                                _AUTHOR_READINGS[name] = yomi
+                    break
+                except Exception:
+                    # ignore and try next candidate
+                    pass
+    except Exception:
+        _AUTHOR_READINGS = {}
+
 # Shared palette (sync with network colors if needed)
 _PALETTE = [
     "#4c78a8", "#f58518", "#54a24b", "#e45756", "#72b7b2",
@@ -48,6 +84,13 @@ def _author_label(name: str) -> str:
                 return f"{name}｜{yomi}"
         except Exception:
             pass
+    # fallback: precomputed readings file (デプロイ環境で pykakasi 未導入の場合の補助)
+    try:
+        _ensure_author_readings()
+        if _AUTHOR_READINGS and name in _AUTHOR_READINGS and _AUTHOR_READINGS[name]:
+            return f"{name}｜{_AUTHOR_READINGS[name]}"
+    except Exception:
+        pass
     return str(name)
 
 def _color_square_data_uri(hex_color: str, size: int = 16) -> str:
