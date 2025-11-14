@@ -646,6 +646,9 @@ with tab_search:
             visible_cols.insert(idx + 1, "summary")
 
     disp = filtered.loc[:, visible_cols].copy()
+    # Ensure 終了ページ is available for display even if make_visible_cols hid it
+    if "終了ページ" in filtered.columns and "終了ページ" not in disp.columns:
+        disp["終了ページ"] = filtered["終了ページ"]
     disp["_row_id"] = disp.apply(make_row_id, axis=1)
 
     # 表示用に発行年のカンマ(,)を除去（例: "1,988" -> "1988"）
@@ -662,9 +665,14 @@ with tab_search:
 
     disp["★"] = disp["_row_id"].apply(lambda rid: rid in st.session_state.favs)
 
-    # 列名修正（開始ページ → p.始）
+    # 列名修正（開始ページ → p.始 / 終了ページ → p.終）
+    rename_map = {}
     if "開始ページ" in disp.columns:
-        disp = disp.rename(columns={"開始ページ": "p.始"})
+        rename_map["開始ページ"] = "p.始"
+    if "終了ページ" in disp.columns:
+        rename_map["終了ページ"] = "p.終"
+    if rename_map:
+        disp = disp.rename(columns=rename_map)
 
     # LinkColumn 設定（HP/PDF を短い見出しで）
     column_config = {
@@ -675,10 +683,12 @@ with tab_search:
     if "PDFリンク先" in disp.columns:
         column_config["PDFリンク先"] = st.column_config.LinkColumn("PDF", help="PDFを開く", display_text="PDF")
 
-    # 列順：No. の直後に HP / PDF を固定配置
-    fixed_front = ["★", "No.", "HPリンク先", "PDFリンク先"]
-    rest = [c for c in disp.columns if c not in ["★", "_row_id", "No.", "HPリンク先", "PDFリンク先"]]
-    display_order = fixed_front + rest + ["_row_id"]
+    # 列順：スクリーンショット順に合わせる
+    desired_front = ["★", "No.", "HPリンク先", "PDFリンク先", "発行年", "巻数", "号数", "p.始", "p.終"]
+    # include only those that exist in disp
+    front = [c for c in desired_front if c in disp.columns]
+    rest = [c for c in disp.columns if c not in set(front) and c != "_row_id"]
+    display_order = front + rest + ["_row_id"]
 
     with st.form("main_table_form", clear_on_submit=False):
         # (per-row immediate toggle removed — keep session-only checkboxes in the table)
@@ -731,9 +741,14 @@ with tab_search:
         return ", ".join(sorted(s)) if s else ""
 
     if not fav_disp.empty:
-        # 列名修正（開始ページ → p.始）
+        # 列名修正（開始ページ → p.始 / 終了ページ → p.終）
+        rename_map = {}
         if "開始ページ" in fav_disp.columns:
-            fav_disp = fav_disp.rename(columns={"開始ページ": "p.始"})
+            rename_map["開始ページ"] = "p.始"
+        if "終了ページ" in fav_disp.columns:
+            rename_map["終了ページ"] = "p.終"
+        if rename_map:
+            fav_disp = fav_disp.rename(columns=rename_map)
 
         fav_disp["★"] = fav_disp["_row_id"].apply(lambda rid: rid in st.session_state.favs)
         fav_disp["tags"] = fav_disp["_row_id"].apply(tags_str_for)
@@ -747,10 +762,11 @@ with tab_search:
         if "PDFリンク先" in fav_disp.columns:
             fav_column_config["PDFリンク先"] = st.column_config.LinkColumn("PDF", display_text="PDF")
 
-        # 列順調整：No. の直後に HP / PDF
-        fixed_front = ["★", "No.", "HPリンク先", "PDFリンク先"]
-        rest = [c for c in fav_disp.columns if c not in ["★", "_row_id", "No.", "HPリンク先", "PDFリンク先", "tags"]]
-        fav_display_order = fixed_front + rest + ["tags", "_row_id"]
+        # 列順調整：スクリーンショット順に合わせる
+        desired_front = ["★", "No.", "HPリンク先", "PDFリンク先", "発行年", "巻数", "号数", "p.始", "p.終"]
+        front = [c for c in desired_front if c in fav_disp.columns]
+        rest = [c for c in fav_disp.columns if c not in set(front) and c not in {"_row_id", "tags"}]
+        fav_display_order = front + rest + ["tags", "_row_id"]
 
         with st.form("fav_table_form", clear_on_submit=False):
             fav_edited = st.data_editor(
