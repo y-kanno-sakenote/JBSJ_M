@@ -187,7 +187,7 @@ def render_coauthor_tab(df: pd.DataFrame, use_disk_cache: bool = False):
             rank = rank.sort_values(["論文数", "著者"], ascending=[False, True])
             rank_shown = rank.head(int(top_n))
 
-            left, right = st.columns([1.0, 1.1])
+            left, right = st.columns([1.0, 1.6])
             with left:
                 st.dataframe(rank_shown[["著者", "論文数"]], use_container_width=True, hide_index=True, height=420)
             with right:
@@ -543,6 +543,48 @@ def render_coauthor_tab(df: pd.DataFrame, use_disk_cache: bool = False):
             st.line_chart(piv)
 
         st.caption(f"条件：表示著者={len(sel)}名 ｜ 移動平均={int(ma)}年 ｜ 指標={metric_mode} ｜ " + _summarize(y_from, y_to, tg_sel, tp_sel))
+
+
+        # --- 折れ線グラフに対応した表（折り畳み式）を表示 ---
+        with st.expander("📊 表を表示（折れ線グラフに対応）", expanded=False):
+            try:
+                # piv のインデックスは発行年になっている想定なので列に戻す
+                tbl = piv.copy()
+                tbl_display = tbl.reset_index()
+
+                # --- 発行年の正規化: カンマ除去と整数化（例: '1,988' -> 1988） ---
+                if "発行年" in tbl_display.columns:
+                    def _fmt_year_str(v):
+                        # Return a string representation without commas. Prefer integer form when possible.
+                        try:
+                            if pd.isna(v):
+                                return ""
+                            # if already numeric-like
+                            num = float(v)
+                            return str(int(num))
+                        except Exception:
+                            s = str(v).replace(",", "").strip()
+                            if s in ("", "nan"):
+                                return ""
+                            try:
+                                return str(int(float(s)))
+                            except Exception:
+                                return s
+
+                    tbl_display["発行年"] = tbl_display["発行年"].apply(_fmt_year_str)
+
+                # 表示／ダウンロード
+                st.dataframe(tbl_display, use_container_width=True, hide_index=False)
+                st.download_button(
+                    "📥 表をCSVで保存",
+                    data=tbl_display.to_csv(index=False).encode("utf-8"),
+                    file_name="coauthor_trend_table.csv",
+                    mime="text/csv",
+                    key="dl_coauthor_trend_table",
+                )
+            except Exception as _e:
+                st.caption(f"表の表示に失敗しました: {_e!s}")
+
         copyui.expander("📋 著者名をすぐコピー", list(piv.columns))
 
     # ⑥ 対象物別のTop5著者（改善版UI）: move inside tab_count, after caption and before copyui.expander

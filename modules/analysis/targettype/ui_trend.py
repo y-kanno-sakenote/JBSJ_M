@@ -86,3 +86,40 @@ def render_trend_block(df: pd.DataFrame, y_from: int, y_to: int, tg_sel: list[st
     _target_label = "対象物" if target_mode == "対象物_top3" else "研究タイプ"
     _shown_n = piv.shape[1]
     st.caption("条件：" + f"対象：{_target_label} ｜ 表示項目数：{_shown_n} ｜ 移動平均：{int(ma)}年 ｜ " + summary_global_filters(y_from, y_to, tg_sel, tp_sel))
+
+        # --- 折れ線グラフに対応する表（折り畳み式） ---
+    with st.expander("📊 表を表示（折れ線グラフに対応）", expanded=False):
+        try:
+            tbl = piv.copy().reset_index()
+
+            # 発行年の正規化（カンマ除去・整数化）
+            if "発行年" in tbl.columns:
+                def _fmt_year_str(v):
+                    try:
+                        if pd.isna(v):
+                            return ""
+                        num = float(v)
+                        return str(int(num))
+                    except Exception:
+                        s = str(v).replace(",", "").strip()
+                        if s in ("", "nan"):
+                            return ""
+                        try:
+                            return str(int(float(s)))
+                        except Exception:
+                            return s
+
+                tbl["発行年"] = tbl["発行年"].apply(_fmt_year_str)
+
+            st.dataframe(tbl, use_container_width=True, hide_index=False)
+            fname = f"targettype_trend_{target_mode}.csv"
+            st.download_button(
+                "📥 表をCSVで保存",
+                data=tbl.to_csv(index=False).encode("utf-8"),
+                file_name=fname,
+                mime="text/csv",
+                key=f"dl_obj_trend_table_{target_mode}",
+            )
+        except Exception as _e:
+            st.caption(f"表の表示に失敗しました: {_e!s}")
+

@@ -38,6 +38,7 @@ def render_distribution_block(df: pd.DataFrame, y_from: int, y_to: int, tg_sel: 
         st.info("該当データがありません。フィルタを調整してください。")
         return
 
+
     c1, c2 = st.columns(2)
     with c1:
         if tg_df.empty:
@@ -60,3 +61,38 @@ def render_distribution_block(df: pd.DataFrame, y_from: int, y_to: int, tg_sel: 
                 st.bar_chart(tp_df.set_index("研究タイプ")["件数"])
 
     st.caption("条件：" + summary_global_filters(y_from, y_to, tg_sel, tp_sel))
+
+    # 折り畳み：条件の下に対象物・研究タイプの表を並べて表示（左：対象物、右：研究タイプ）
+    with st.expander("📋 対象物／研究タイプの一覧（表）", expanded=False):
+        cols = st.columns(2)
+        with cols[0]:
+            if tg_df.empty:
+                st.info("対象物データがありません。")
+            else:
+                try:
+                    st.dataframe(tg_df, use_container_width=True, hide_index=True)
+                    st.download_button(
+                        "📥 対象物表をCSVで保存",
+                        data=tg_df.to_csv(index=False).encode("utf-8"),
+                        file_name="targettype_counts_by_object.csv",
+                        mime="text/csv",
+                        key="dl_tg_table_after",
+                    )
+                except Exception as _e:
+                    st.caption(f"表の表示に失敗しました: {_e!s}")
+
+        with cols[1]:
+            if tp_df.empty:
+                st.info("研究タイプデータがありません。")
+            else:
+                try:
+                    st.dataframe(tp_df, use_container_width=True, hide_index=True)
+                    st.download_button(
+                        "📥 研究タイプ表をCSVで保存",
+                        data=tp_df.to_csv(index=False).encode("utf-8"),
+                        file_name="targettype_counts_by_type.csv",
+                        mime="text/csv",
+                        key="dl_tp_table_after",
+                    )
+                except Exception as _e:
+                    st.caption(f"表の表示に失敗しました: {_e!s}")

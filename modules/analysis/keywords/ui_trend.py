@@ -96,6 +96,42 @@ def render_trend_block(df_use: pd.DataFrame) -> None:
         parts.append(f"除外：{exc_pv}")
 
     st.caption(" ｜ ".join(parts))
+
+    # --- 折れ線グラフに対応する表（折り畳み式）を表示 ---
+    with st.expander("📊 表を表示（折れ線グラフに対応）", expanded=False):
+        try:
+            tbl = piv.copy().reset_index()
+
+            # 発行年の正規化（カンマ削除・整数化）
+            if "発行年" in tbl.columns:
+                def _fmt_year_str(v):
+                    try:
+                        if pd.isna(v):
+                            return ""
+                        num = float(v)
+                        return str(int(num))
+                    except Exception:
+                        s = str(v).replace(",", "").strip()
+                        if s in ("", "nan"):
+                            return ""
+                        try:
+                            return str(int(float(s)))
+                        except Exception:
+                            return s
+
+                tbl["発行年"] = tbl["発行年"].apply(_fmt_year_str)
+
+            st.dataframe(tbl, use_container_width=True, hide_index=False)
+            st.download_button(
+                "📥 表をCSVで保存",
+                data=tbl.to_csv(index=False).encode("utf-8"),
+                file_name="keyword_trend_table.csv",
+                mime="text/csv",
+                key="dl_keyword_trend_table",
+            )
+        except Exception as _e:
+            st.caption(f"表の表示に失敗しました: {_e!s}")
+
     copy_expander("📋 キーワードをすぐコピー", [c for c in piv.columns if c != "発行年"])
 
 def _split(s: str) -> list[str]:

@@ -53,3 +53,26 @@ def render_cross_block(df: pd.DataFrame, y_from: int, y_to: int, tg_sel: list[st
             st.checkbox("セルの値を表示", value=show_values, key="obj_cross_show_values", help="ヒートマップの各セルに件数を直接表示します。")
 
     st.caption("条件：" + ("セル値表示：ON ｜ " if bool(st.session_state.get("obj_cross_show_values", False)) else "セル値表示：OFF ｜ ") + summary_global_filters(y_from, y_to, tg_sel, tp_sel))
+
+    # 折り畳み式の表（ヒートマップに対応）を条件表示の下に付ける
+    with st.expander("📋 ヒートマップ表を表示（対象物×研究タイプ）", expanded=False):
+        try:
+            # 表示は pivot 形式（研究タイプ × 対象物）
+            st.dataframe(piv, use_container_width=True, hide_index=False)
+            st.download_button(
+                "📥 表をCSVで保存",
+                data=piv.reset_index().to_csv(index=False).encode("utf-8"),
+                file_name="cross_heatmap_table.csv",
+                mime="text/csv",
+                key="dl_cross_piv_csv",
+            )
+            # 生データ（cross）も欲しい場合のために原始行形式のダウンロード
+            st.download_button(
+                "📥 生データをCSVで保存（行形式）",
+                data=cross.to_csv(index=False).encode("utf-8"),
+                file_name="cross_counts_raw.csv",
+                mime="text/csv",
+                key="dl_cross_raw_csv",
+            )
+        except Exception as _e:
+            st.caption(f"表の表示に失敗しました: {_e!s}")
