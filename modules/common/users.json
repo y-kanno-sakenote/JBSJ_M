@@ -1,0 +1,14 @@
+{
+  "admin": {
+    "salt": "c491e4e1418bebc79da08ad932955850",
+    "hash": "580a06d192e1aced6a32b8f428358f29e5fc27701f41f5226d91e488c5765a04",
+    "plan": "paid",
+    "favorites": []
+  },
+  "test_user1": {
+    "salt": "c855dda1763a2e5f23030429eea2e07b",
+    "hash": "3e80251045ea28c48fc2f0d6d6333e52905e4642feecfd9c85245f3d2ed2002b",
+    "plan": "paid",
+    "favorites": []
+  }
+}

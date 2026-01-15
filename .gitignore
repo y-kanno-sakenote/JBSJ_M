@@ -1,0 +1,43 @@
+# Byte-compiled / caches
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# OS files
+.DS_Store
+
+# Python virtual envs
+venv/
+env/
+.env/
+
+# Editor configs
+.vscode/
+.idea/
+
+# Cache / generated data
+.cache/
+cache/
+*.sqlite3
+*.db
+
+# Logs
+*.log
+
+# Personal / docs not relevant to project
+*.docx
+プロンプト.txt
+
+# Streamlit
+.streamlit/
+
+# Distribution / build
+dist/
+build/
+*.egg-info/
+
+# Fonts and other binary assets are part of repo (do not ignore unless intentionally)
+
+# Archive for backups (local archives not tracked)
+archive/
